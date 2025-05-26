@@ -1,0 +1,27 @@
+[flake8]
+# Black defaults to 88 characters
+max-line-length = 88
+extend-ignore = 
+    # Black takes care of whitespace
+    E203,
+    # Black takes care of line breaks
+    W503,
+    # Allow lambda expressions
+    E731
+exclude = 
+    .git,
+    __pycache__,
+    build,
+    dist,
+    .venv,
+    venv,
+    .tox,
+    .eggs,
+    *.egg,
+    .pytest_cache,
+    .mypy_cache
+per-file-ignores =
+    # Allow imports at the end of __init__.py
+    __init__.py:E402,F401
+    # Allow star imports in __init__.py
+    __init__.py:F403,F405 

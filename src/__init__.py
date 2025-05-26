@@ -1,0 +1,1 @@
+"""Calendar Desktop Notifications application."""
