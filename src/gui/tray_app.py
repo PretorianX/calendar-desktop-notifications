@@ -6,9 +6,11 @@ import os
 import sys
 import threading
 import time
+from typing import Optional
 
 import pystray
-from PIL import Image, ImageDraw
+import pytz
+from PIL import Image, ImageDraw, ImageFont
 from PyQt6 import QtCore, QtWidgets
 
 from src.calendar_sync.caldav_client import CalDAVClient
@@ -16,6 +18,9 @@ from src.config.config_manager import ConfigManager
 from src.notification.notification_manager import NotificationManager
 
 logger = logging.getLogger(__name__)
+
+
+
 
 
 # Add function to activate application on macOS
@@ -472,20 +477,40 @@ class TrayApp:
         min_time_until = float("inf")
 
         for event in self._events:
+            # For modified instances (events with RECURRENCE-ID), the CalDAV client has already
+            # corrected the start_time to the actual event time, so treat them as regular events
+            if hasattr(event, 'is_modified_instance') and event.is_modified_instance:
+                logger.debug(
+                    f"Event '{event.summary}' is a modified instance with corrected time: {event.start_time} "
+                    f"(RECURRENCE-ID: {getattr(event, 'recurrence_id', 'N/A')}). "
+                    f"Using corrected time for tray icon."
+                )
+                # Check if this future event is sooner than what we've found
+                if event.start_time > now:
+                    time_until = (event.start_time - now).total_seconds() / 60
+                    if time_until < min_time_until:
+                        min_time_until = time_until
+                        closest_event = event
+                continue
+            
             # Skip events that are already over
             if event.start_time < now:
                 # For events with start times far in the past, check if they might be recurring events
                 time_until_event = (event.start_time - now).total_seconds() / 60
                 if time_until_event < -1440:  # More than 1 day in the past
+                        
                     # Try to determine if this event recurs today
                     try:
                         # Get the time component from the original event
                         event_time = event.start_time.time()
+                        
+                        # FIXED: Use the original event's timezone, not local timezone
+                        original_timezone = event.start_time.tzinfo
 
-                        # Create a datetime for today with the event's time
-                        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                        today_occurrence = datetime.datetime.combine(
-                            today.date(), event_time, tzinfo=now.tzinfo
+                        # FIXED: Create today's occurrence using utility function for proper timezone handling
+                        today_date = now.astimezone(original_timezone).date()
+                        today_occurrence = _create_timezone_aware_datetime(
+                            today_date, event_time, original_timezone
                         )
 
                         # If this is a future occurrence today, consider it
@@ -733,3 +758,25 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+def _create_timezone_aware_datetime(date_obj, time_obj, timezone_obj):
+    """Create a timezone-aware datetime, handling different timezone types.
+    
+    Args:
+        date_obj: date object
+        time_obj: time object
+        timezone_obj: timezone object (could be pytz, _tzicalvtz, etc.)
+        
+    Returns:
+        timezone-aware datetime object
+    """
+    # Combine date and time first
+    naive_dt = datetime.datetime.combine(date_obj, time_obj)
+    
+    # Handle different timezone types
+    if hasattr(timezone_obj, 'localize'):
+        # Standard pytz timezone
+        return timezone_obj.localize(naive_dt)
+    else:
+        # For _tzicalvtz and other timezone types, use replace
+        return naive_dt.replace(tzinfo=timezone_obj)

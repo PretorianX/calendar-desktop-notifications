@@ -221,3 +221,272 @@ class TestCalDAVClient:
         assert len(events) == 1
         assert events[0].uid == "test-uid"
         assert events[0].summary == "Test Event"
+
+    @patch("caldav.DAVClient")
+    def test_get_events_with_timezone_aware_dates(self, mock_dav_client):
+        """Test that get_events correctly handles timezone-aware dates."""
+        # Mock setup
+        mock_principal = MagicMock()
+        mock_calendar = MagicMock()
+        mock_calendar.name = "Test Calendar"
+
+        # Mock calendar event with timezone-aware datetime
+        mock_event = MagicMock()
+        mock_event.vobject_instance.vevent.uid.value = "7c7d0461-1bf3-458c-9fd2-81449b161736"
+        mock_event.vobject_instance.vevent.summary.value = "PM - Architect sync"
+
+        # Create timezone-aware datetime for Europe/Athens timezone
+        athens_tz = pytz.timezone('Europe/Athens')
+        start_time = athens_tz.localize(datetime.datetime(2025, 6, 27, 15, 0, 0))
+        end_time = athens_tz.localize(datetime.datetime(2025, 6, 27, 16, 0, 0))
+
+        mock_event.vobject_instance.vevent.dtstart.value = start_time
+        mock_event.vobject_instance.vevent.dtend.value = end_time
+        
+        # Add location and description
+        mock_event.vobject_instance.vevent.location.value = "https://meet.namecheap.net/spacemail-pm-architects"
+        mock_event.vobject_instance.vevent.description.value = "https://jts.totest.chat:8443/spacemail-pm-architects"
+
+        # Setup the date_search method return
+        mock_calendar.date_search.return_value = [mock_event]
+
+        # Setup the principal and calendar hierarchy
+        mock_principal.calendars.return_value = [mock_calendar]
+        mock_dav_client.return_value.principal.return_value = mock_principal
+
+        # Create client, connect, and get events
+        client = CalDAVClient(
+            url="https://example.com/caldav",
+            username="test",
+            password="test123",
+            calendar_name="Test Calendar",
+        )
+
+        client.connect()
+
+        # Use search dates
+        search_start = datetime.datetime(2025, 6, 27, 0, 0, 0, tzinfo=pytz.UTC)
+        search_end = datetime.datetime(2025, 6, 28, 0, 0, 0, tzinfo=pytz.UTC)
+
+        events = client.get_events(search_start, search_end)
+
+        # Verify the returned events have correct timezone information
+        assert len(events) == 1
+        event = events[0]
+        assert event.uid == "7c7d0461-1bf3-458c-9fd2-81449b161736"
+        assert event.summary == "PM - Architect sync"
+        
+        # Verify timezone is preserved (should be Athens time)
+        assert event.start_time.tzinfo.zone == 'Europe/Athens'
+        assert event.end_time.tzinfo.zone == 'Europe/Athens'
+        
+        # Verify actual times are correct
+        assert event.start_time.hour == 15  # 3 PM Athens time
+        assert event.end_time.hour == 16    # 4 PM Athens time
+        
+        assert event.location == "https://meet.namecheap.net/spacemail-pm-architects"
+        assert event.description == "https://jts.totest.chat:8443/spacemail-pm-architects"
+
+    @patch("caldav.DAVClient")
+    def test_get_events_with_naive_dates_gets_utc_timezone(self, mock_dav_client):
+        """Test that get_events correctly handles naive datetime objects by adding UTC timezone."""
+        # Mock setup
+        mock_principal = MagicMock()
+        mock_calendar = MagicMock()
+        mock_calendar.name = "Test Calendar"
+
+        # Mock calendar event with naive datetime (no timezone info)
+        mock_event = MagicMock()
+        mock_event.vobject_instance.vevent.uid.value = "naive-event-uid"
+        mock_event.vobject_instance.vevent.summary.value = "Naive Event"
+
+        # Create naive datetime (no timezone)
+        naive_start = datetime.datetime(2025, 6, 27, 15, 0, 0)
+        naive_end = datetime.datetime(2025, 6, 27, 16, 0, 0)
+
+        mock_event.vobject_instance.vevent.dtstart.value = naive_start
+        mock_event.vobject_instance.vevent.dtend.value = naive_end
+
+        # Setup the date_search method return
+        mock_calendar.date_search.return_value = [mock_event]
+
+        # Setup the principal and calendar hierarchy
+        mock_principal.calendars.return_value = [mock_calendar]
+        mock_dav_client.return_value.principal.return_value = mock_principal
+
+        # Create client, connect, and get events
+        client = CalDAVClient(
+            url="https://example.com/caldav",
+            username="test",
+            password="test123",
+            calendar_name="Test Calendar",
+        )
+
+        client.connect()
+
+        # Use search dates
+        search_start = datetime.datetime(2025, 6, 27, 0, 0, 0, tzinfo=pytz.UTC)
+        search_end = datetime.datetime(2025, 6, 28, 0, 0, 0, tzinfo=pytz.UTC)
+
+        events = client.get_events(search_start, search_end)
+
+        # Verify the returned events have UTC timezone added
+        assert len(events) == 1
+        event = events[0]
+        assert event.uid == "naive-event-uid"
+        assert event.summary == "Naive Event"
+        
+        # Verify UTC timezone was added to naive datetimes
+        assert event.start_time.tzinfo == pytz.UTC
+        assert event.end_time.tzinfo == pytz.UTC
+        
+        # Verify actual times are preserved
+        assert event.start_time.hour == 15
+        assert event.end_time.hour == 16
+
+    @patch("caldav.DAVClient")
+    def test_parse_real_vcalendar_event(self, mock_dav_client):
+        """Test parsing of a real VCALENDAR event to verify datetime handling."""
+        # Mock setup
+        mock_principal = MagicMock()
+        mock_calendar = MagicMock()
+        mock_calendar.name = "Test Calendar"
+
+        # Mock calendar event with the exact data from the user's issue
+        mock_event = MagicMock()
+        mock_event.vobject_instance.vevent.uid.value = "7c7d0461-1bf3-458c-9fd2-81449b161736"
+        mock_event.vobject_instance.vevent.summary.value = "PM - Architect sync"
+
+        # Create timezone-aware datetime for Europe/Athens timezone exactly as it appears in the iCal
+        # DTSTART;TZID=Europe/Athens:20250627T150000
+        # DTEND;TZID=Europe/Athens:20250627T160000
+        athens_tz = pytz.timezone('Europe/Athens')
+        event_start = athens_tz.localize(datetime.datetime(2025, 6, 27, 15, 0, 0))
+        event_end = athens_tz.localize(datetime.datetime(2025, 6, 27, 16, 0, 0))
+
+        mock_event.vobject_instance.vevent.dtstart.value = event_start
+        mock_event.vobject_instance.vevent.dtend.value = event_end
+        
+        # Add location and description from the real event
+        mock_event.vobject_instance.vevent.location.value = "https://meet.namecheap.net/spacemail-pm-architects"
+        mock_event.vobject_instance.vevent.description.value = "https://jts.totest.chat:8443/spacemail-pm-architects"
+
+        # Make sure we have attributes for the optional fields
+        mock_event.vobject_instance.vevent.__dict__["location"] = mock_event.vobject_instance.vevent.location
+        mock_event.vobject_instance.vevent.__dict__["description"] = mock_event.vobject_instance.vevent.description
+
+        # Setup the date_search method return
+        mock_calendar.date_search.return_value = [mock_event]
+
+        # Setup the principal and calendar hierarchy
+        mock_principal.calendars.return_value = [mock_calendar]
+        mock_dav_client.return_value.principal.return_value = mock_principal
+
+        # Create client, connect, and get events
+        client = CalDAVClient(
+            url="https://example.com/caldav",
+            username="test",
+            password="test123",
+            calendar_name="Test Calendar",
+        )
+
+        client.connect()
+
+        # Use search dates that would include this event
+        search_start = datetime.datetime(2025, 6, 27, 0, 0, 0, tzinfo=pytz.UTC)
+        search_end = datetime.datetime(2025, 6, 28, 0, 0, 0, tzinfo=pytz.UTC)
+
+        events = client.get_events(search_start, search_end)
+
+        # Verify we got the event correctly parsed
+        assert len(events) == 1
+        event = events[0]
+        
+        # Verify the core event details
+        assert event.uid == "7c7d0461-1bf3-458c-9fd2-81449b161736"
+        assert event.summary == "PM - Architect sync"
+        assert event.location == "https://meet.namecheap.net/spacemail-pm-architects"
+        assert event.description == "https://jts.totest.chat:8443/spacemail-pm-architects"
+        
+        # Verify the datetime values are correct and preserve timezone
+        # This should be 15:00 Athens time, NOT the creation time
+        assert event.start_time == event_start
+        assert event.end_time == event_end
+        
+        # Verify timezone is preserved
+        assert event.start_time.tzinfo.zone == 'Europe/Athens'
+        assert event.end_time.tzinfo.zone == 'Europe/Athens'
+        
+        # Verify the actual time values (not creation time)
+        assert event.start_time.hour == 15  # 3 PM Athens time, NOT creation time
+        assert event.start_time.minute == 0
+        assert event.end_time.hour == 16    # 4 PM Athens time
+        assert event.end_time.minute == 0
+        
+        # Verify the date
+        assert event.start_time.year == 2025
+        assert event.start_time.month == 6
+        assert event.start_time.day == 27
+
+    @patch("caldav.DAVClient")
+    def test_timezone_preservation_for_recurring_events(self, mock_dav_client):
+        """Test that recurring events preserve their original timezone when calculating today's occurrence."""
+        # Mock setup
+        mock_principal = MagicMock()
+        mock_calendar = MagicMock()
+        mock_calendar.name = "Test Calendar"
+
+        # Mock calendar event that looks like a recurring event with Europe/Athens timezone
+        # This simulates an event that was created in the past but recurs today
+        mock_event = MagicMock()
+        mock_event.vobject_instance.vevent.uid.value = "recurring-event-uid"
+        mock_event.vobject_instance.vevent.summary.value = "Daily Standup"
+
+        # Create an event that appears to be from yesterday but in Athens timezone
+        athens_tz = pytz.timezone('Europe/Athens')
+        yesterday = datetime.datetime.now(athens_tz) - datetime.timedelta(days=1)
+        event_start = yesterday.replace(hour=15, minute=0, second=0, microsecond=0)
+        event_end = event_start + datetime.timedelta(hours=1)
+
+        mock_event.vobject_instance.vevent.dtstart.value = event_start
+        mock_event.vobject_instance.vevent.dtend.value = event_end
+
+        # Setup the date_search method return
+        mock_calendar.date_search.return_value = [mock_event]
+
+        # Setup the principal and calendar hierarchy
+        mock_principal.calendars.return_value = [mock_calendar]
+        mock_dav_client.return_value.principal.return_value = mock_principal
+
+        # Create client, connect, and get events
+        client = CalDAVClient(
+            url="https://example.com/caldav",
+            username="test",
+            password="test123",
+            calendar_name="Test Calendar",
+        )
+
+        client.connect()
+
+        # Use search dates that would include this event
+        search_start = datetime.datetime.now(pytz.UTC) - datetime.timedelta(days=1)
+        search_end = datetime.datetime.now(pytz.UTC) + datetime.timedelta(days=1)
+
+        events = client.get_events(search_start, search_end)
+
+        # Verify we got the event correctly parsed
+        assert len(events) == 1
+        event = events[0]
+        
+        # Verify the core event details
+        assert event.uid == "recurring-event-uid"
+        assert event.summary == "Daily Standup"
+        
+        # The key test: verify that the timezone is preserved from the original event
+        # This should be Europe/Athens timezone, not the local system timezone
+        assert event.start_time.tzinfo.zone == 'Europe/Athens'
+        assert event.end_time.tzinfo.zone == 'Europe/Athens'
+        
+        # Verify the original time is preserved
+        assert event.start_time.hour == 15  # 3 PM Athens time
+        assert event.start_time.minute == 0

@@ -85,6 +85,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CalDAV client now uses `search` method instead of deprecated `date_search`
 - Test suite stability improvements - fixed hanging and infinite running tests
 - Improved datetime mocking in tests for recurring event handling
+- Fixed timezone handling issue where recurring events with modified datetime would show creation time instead of actual event time. The app now correctly preserves the original event's timezone when calculating today's/tomorrow's occurrences for recurring events.
+- Fixed timezone localization issue in recurring event calculation that could cause incorrect time display due to daylight saving time transitions. Now uses proper timezone.localize() method instead of datetime.combine() with tzinfo parameter.
+- Fixed `'_tzicalvtz' object has no attribute 'localize'` error when processing CalDAV events with iCalendar timezone objects. Added utility function to handle both pytz and _tzicalvtz timezone types properly.
+- Fixed incorrect event time display for rescheduled/moved events. The app now uses RECURRENCE-ID field as the actual event time for modified recurring event instances, instead of using the outdated DTSTART time.
+- Fixed tray icon not displaying minutes until meeting for modified recurring events. The CalDAV client now properly processes all VEVENT components in VCALENDAR files, and the tray app correctly handles events with corrected start times from RECURRENCE-ID fields.
+- Fixed display of duplicate "ghost" events from old recurring event instances. The CalDAV client now filters out events more than 24 hours in the past to prevent showing outdated event instances alongside current ones.
+
+### Added
+- Added comprehensive test cases for timezone handling in CalDAV events
+- Added test for parsing real VCALENDAR event data to verify datetime handling
+- Added enhanced debug logging for recurring event timezone calculations
+- Added detailed debug logging for CalDAV event parsing to troubleshoot timezone and recurring event issues
 
 ## [0.2.0] - 2025-01-XX
 ### Added

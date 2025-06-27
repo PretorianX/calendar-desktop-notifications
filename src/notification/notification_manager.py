@@ -10,10 +10,34 @@ import webbrowser
 from typing import List
 
 import simpleaudio as sa
+import pytz
 
 from src.calendar_sync.caldav_client import CalendarEvent
 
 logger = logging.getLogger(__name__)
+
+
+def _create_timezone_aware_datetime(date_obj, time_obj, timezone_obj):
+    """Create a timezone-aware datetime, handling different timezone types.
+    
+    Args:
+        date_obj: date object
+        time_obj: time object
+        timezone_obj: timezone object (could be pytz, _tzicalvtz, etc.)
+        
+    Returns:
+        timezone-aware datetime object
+    """
+    # Combine date and time first
+    naive_dt = datetime.datetime.combine(date_obj, time_obj)
+    
+    # Handle different timezone types
+    if hasattr(timezone_obj, 'localize'):
+        # Standard pytz timezone
+        return timezone_obj.localize(naive_dt)
+    else:
+        # For _tzicalvtz and other timezone types, use replace
+        return naive_dt.replace(tzinfo=timezone_obj)
 
 
 class NotificationManager:
@@ -112,21 +136,40 @@ class NotificationManager:
                     # Try to determine if this event recurs today or tomorrow
                     # Use the local timezone for today, not UTC
                     local_now = datetime.datetime.now().astimezone()
-                    local_timezone = local_now.tzinfo
+                    
+                    # FIXED: Use the original event's timezone, not local timezone
+                    original_timezone = event.start_time.tzinfo
 
                     # Get the time component from the original event
                     event_time = event.start_time.time()
+                    
+                    # Debug: Log the original event details
+                    logger.debug(
+                        f"Processing recurring event '{event.summary}': "
+                        f"Original start_time: {event.start_time} "
+                        f"(timezone: {original_timezone}), "
+                        f"extracted time: {event_time}"
+                    )
+                    
+                    # Special handling for events that might have been rescheduled
+                    # If this event has a RECURRENCE-ID, it might be a moved/rescheduled event
+                    if hasattr(event, 'is_modified_instance') and event.is_modified_instance:
+                        logger.debug(
+                            f"Event '{event.summary}' is a modified instance "
+                            f"(RECURRENCE-ID: {getattr(event, 'recurrence_id', 'N/A')}). "
+                            f"This might be a rescheduled event - checking for today's occurrence with different times."
+                        )
 
-                    # Create a datetime for today with the event's time in the local timezone
-                    today = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-                    today_occurrence = datetime.datetime.combine(
-                        today.date(), event_time, tzinfo=local_timezone
+                    # FIXED: Create today's occurrence using utility function for proper timezone handling
+                    today_date = local_now.astimezone(original_timezone).date()
+                    today_occurrence = _create_timezone_aware_datetime(
+                        today_date, event_time, original_timezone
                     )
 
-                    # Create a datetime for tomorrow with the event's time
-                    tomorrow = today + datetime.timedelta(days=1)
-                    tomorrow_occurrence = datetime.datetime.combine(
-                        tomorrow.date(), event_time, tzinfo=local_timezone
+                    # Create tomorrow's occurrence using utility function
+                    tomorrow_date = today_date + datetime.timedelta(days=1)
+                    tomorrow_occurrence = _create_timezone_aware_datetime(
+                        tomorrow_date, event_time, original_timezone
                     )
 
                     # Calculate time until these occurrences
@@ -138,12 +181,14 @@ class NotificationManager:
                     ).total_seconds() / 60
 
                     logger.debug(
-                        f"Possible occurrence today at {today_occurrence.time()} "
-                        f"{local_timezone}, time until: {time_until_today:.2f} min"
+                        f"Possible occurrence today at {today_occurrence} "
+                        f"(local equivalent: {today_occurrence.astimezone(local_now.tzinfo)}), "
+                        f"time until: {time_until_today:.2f} min"
                     )
                     logger.debug(
-                        f"Possible occurrence tomorrow at {tomorrow_occurrence.time()} "
-                        f"{local_timezone}, time until: {time_until_tomorrow:.2f} min"
+                        f"Possible occurrence tomorrow at {tomorrow_occurrence} "
+                        f"(local equivalent: {tomorrow_occurrence.astimezone(local_now.tzinfo)}), "
+                        f"time until: {time_until_tomorrow:.2f} min"
                     )
 
                     # Use today's occurrence if it's in the future
@@ -169,7 +214,8 @@ class NotificationManager:
                         if today_occurrence <= local_now:
                             logger.debug(
                                 f"Today's occurrence for '{event.summary}' already passed "
-                                f"at {today_occurrence.time()}, checking tomorrow"
+                                f"at {today_occurrence} (local time: {today_occurrence.astimezone(local_now.tzinfo)}), "
+                                f"checking tomorrow"
                             )
                         if (
                             tomorrow_occurrence <= local_now
