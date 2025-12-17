@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+import webbrowser
 from datetime import datetime as DateTimeType
 
 import pystray
@@ -17,6 +18,135 @@ from src.config.config_manager import ConfigManager
 from src.notification.notification_manager import NotificationManager
 
 logger = logging.getLogger(__name__)
+
+
+class _MacNativeTrayIcon:
+    """macOS tray icon implementation using AppKit.
+
+    pystray cannot distinguish left vs right click on macOS (platform limitation),
+    so we implement the status bar item directly to support:
+    - left click: events list menu (each event opens URL if present)
+    - right click: main control menu (Settings / Force Sync / Exit)
+    """
+
+    def __init__(self, app: "TrayApp", icon_image: Image.Image):
+        self._app = app
+        self._status_item = None
+        self._handler = None
+        self._icon = icon_image
+
+        # Lazily imported to keep non-macOS environments clean.
+        import AppKit  # type: ignore
+        import objc  # type: ignore
+        from Foundation import NSObject  # type: ignore
+
+        class _Handler(NSObject):
+            def initWithApp_(self, tray_app):  # noqa: N802 - Cocoa naming
+                self = objc.super(_Handler, self).init()
+                if self is None:
+                    return None
+                self._tray_app = tray_app
+                return self
+
+            def onStatusItemClick_(self, sender):  # noqa: N802 - Cocoa naming
+                event = AppKit.NSApp.currentEvent()
+                if event is None:
+                    return
+                event_type = event.type()
+                # Default to left-click behavior for unknown types.
+                if event_type == AppKit.NSEventTypeRightMouseUp:
+                    menu = self._tray_app._build_macos_main_menu()  # noqa: SLF001
+                else:
+                    menu = self._tray_app._build_macos_events_menu()  # noqa: SLF001
+                self._tray_app.tray_icon._mac_status_item.popUpStatusItemMenu_(menu)  # type: ignore[attr-defined]  # noqa: SLF001
+
+            def onSettings_(self, sender):  # noqa: N802 - Cocoa naming
+                self._tray_app._show_settings()  # noqa: SLF001
+
+            def onForceSync_(self, sender):  # noqa: N802 - Cocoa naming
+                self._tray_app._force_sync()  # noqa: SLF001
+
+            def onExit_(self, sender):  # noqa: N802 - Cocoa naming
+                self._tray_app._exit()  # noqa: SLF001
+
+            def onOpenEvent_(self, sender):  # noqa: N802 - Cocoa naming
+                try:
+                    url = sender.representedObject()
+                except Exception:
+                    url = None
+                if url:
+                    self._tray_app._open_url(str(url))  # noqa: SLF001
+
+        # Ensure there is an NSApplication instance.
+        AppKit.NSApplication.sharedApplication()
+
+        self._handler = _Handler.alloc().initWithApp_(app)
+
+        status_bar = AppKit.NSStatusBar.systemStatusBar()
+        self._status_item = status_bar.statusItemWithLength_(
+            AppKit.NSVariableStatusItemLength
+        )
+
+        button = self._status_item.button()
+        button.setTarget_(self._handler)
+        button.setAction_("onStatusItemClick:")
+        button.sendActionOn_(
+            AppKit.NSEventMaskLeftMouseUp | AppKit.NSEventMaskRightMouseUp
+        )
+
+        # Used by handler; mirror naming to avoid exposing private status item.
+        self._mac_status_item = self._status_item
+
+        # Initial icon.
+        self.icon = icon_image
+
+    @property
+    def icon(self) -> Image.Image:
+        return self._icon
+
+    @icon.setter
+    def icon(self, new_icon: Image.Image) -> None:
+        self._icon = new_icon
+        try:
+            import AppKit  # type: ignore
+            import Foundation  # type: ignore
+            import io
+
+            # Status bar icons must be small; otherwise macOS can render them huge.
+            # 22x22 is the typical menu bar height on macOS.
+            size_px = 22
+            pil_icon = new_icon.convert("RGBA").resize(
+                (size_px, size_px), resample=Image.Resampling.LANCZOS
+            )
+
+            png_bytes = io.BytesIO()
+            pil_icon.save(png_bytes, format="PNG")
+            raw = png_bytes.getvalue()
+            ns_data = Foundation.NSData.dataWithBytes_length_(raw, len(raw))
+            ns_image = AppKit.NSImage.alloc().initWithData_(ns_data)
+
+            # Tell AppKit what size we expect.
+            ns_image.setSize_(Foundation.NSMakeSize(size_px, size_px))
+
+            button = self._status_item.button()
+            button.setImageScaling_(AppKit.NSImageScaleProportionallyDown)
+            button.setImage_(ns_image)
+        except Exception as e:
+            logger.error(f"Failed to update macOS tray icon image: {e}")
+
+    def run(self):
+        import AppKit  # type: ignore
+
+        AppKit.NSApp.run()
+
+    def stop(self):
+        try:
+            import AppKit  # type: ignore
+
+            AppKit.NSApp.terminate_(None)
+        except Exception:
+            # Termination is best-effort.
+            pass
 
 
 # Add function to activate application on macOS
@@ -340,19 +470,29 @@ class TrayApp:
 
     def _create_tray_icon(self):
         """Create system tray icon."""
-        icon = self._create_icon_image()
+        icon = self._create_macos_icon_image() if sys.platform == "darwin" else self._create_icon_image()
 
-        # Use a lambda function for the callback to ensure proper binding
-        menu = (
-            pystray.MenuItem("Show Events", lambda icon, item: self._show_events()),
-            pystray.MenuItem("Settings", lambda icon, item: self._show_settings()),
-            pystray.MenuItem("Force Sync", lambda icon, item: self._force_sync()),
-            pystray.MenuItem("Exit", lambda icon, item: self._exit()),
-        )
+        if sys.platform == "darwin":
+            # Native macOS tray icon to distinguish left vs right click.
+            self.tray_icon = _MacNativeTrayIcon(self, icon)
+        else:
+            # pystray dynamic submenu to show upcoming events.
+            def events_menu():
+                return pystray.Menu(*self._build_pystray_event_items())
 
-        self.tray_icon = pystray.Icon(
-            "calendar_notifications", icon, "Calendar Notifications", menu
-        )
+            menu = pystray.Menu(
+                pystray.MenuItem("Events", events_menu),
+                pystray.MenuItem(
+                    "Show Events (Window)", lambda _icon, _item: self._show_events()
+                ),
+                pystray.MenuItem("Settings", lambda _icon, _item: self._show_settings()),
+                pystray.MenuItem("Force Sync", lambda _icon, _item: self._force_sync()),
+                pystray.MenuItem("Exit", lambda _icon, _item: self._exit()),
+            )
+
+            self.tray_icon = pystray.Icon(
+                "calendar_notifications", icon, "Calendar Notifications", menu
+            )
 
         # On macOS, we need to ensure the icon is visible on all monitors
         if sys.platform == "darwin":
@@ -402,6 +542,89 @@ class TrayApp:
             if next_event:
                 self._add_time_to_icon(dc, next_event, width, height)
 
+        return image
+
+    def _create_macos_icon_image(self):
+        """Create a small (menubar-sized) icon for macOS with readable minutes.
+
+        Keep the visual style close to the original tray icon (calendar header + body),
+        but rendered at status-bar size.
+        """
+        events = self._get_events_snapshot()
+        size = 22
+        image = Image.new("RGBA", (size, size), color=(0, 0, 0, 0))
+        dc = ImageDraw.Draw(image)
+
+        def draw_calendar_shell(body_fill):
+            # Outer body
+            dc.rectangle(
+                (1, 1, size - 2, size - 2),
+                fill=body_fill,
+                outline=(200, 200, 200, 255),
+            )
+            # Header strip (same color to keep a single background color per time range)
+            header_h = 6
+            header_fill = body_fill
+            dc.rectangle(
+                (1, 1, size - 2, 1 + header_h),
+                fill=header_fill,
+                outline=(200, 200, 200, 255),
+            )
+
+        next_event = self._get_next_event(events)
+        if not events or not next_event:
+            # Default calendar look before first sync / when no upcoming events.
+            draw_calendar_shell((0, 120, 212, 255))
+            return image
+
+        now = datetime.datetime.now().astimezone()
+        temp_time = getattr(next_event, "_temp_display_time", None)
+        event_time = (
+            temp_time if isinstance(temp_time, DateTimeType) else next_event.start_time
+        )
+        minutes_until = int((event_time - now).total_seconds() / 60)
+
+        if minutes_until <= 0:
+            text = "0"
+        elif minutes_until > 99:
+            text = "99"
+        else:
+            text = f"{minutes_until}"
+
+        if minutes_until > 10:
+            bg_color = (0, 180, 0, 255)
+        elif minutes_until > 5:
+            bg_color = (255, 200, 0, 255)
+        else:
+            bg_color = (220, 0, 0, 255)
+
+        draw_calendar_shell(bg_color)
+
+        # Small, readable font for menubar.
+        font_size = 12 if len(text) <= 2 else 11
+        try:
+            font = ImageFont.truetype("Arial Bold", font_size)
+        except OSError:
+            try:
+                font = ImageFont.truetype("Arial", font_size)
+            except OSError:
+                font = ImageFont.load_default()
+
+        # Slight shadow for legibility.
+        dc.text(
+            (size // 2 + 1, size // 2 + 1),
+            text,
+            fill=(0, 0, 0, 180),
+            font=font,
+            anchor="mm",
+        )
+        dc.text(
+            (size // 2, size // 2 + 0),
+            text,
+            fill=(255, 255, 255, 255),
+            font=font,
+            anchor="mm",
+        )
         return image
 
     def _add_time_to_icon(self, dc, event, width, height):
@@ -594,6 +817,144 @@ class TrayApp:
         activate_app_on_macos()
         dialog.exec()
 
+    def _open_url(self, url: str) -> None:
+        """Open a URL in the default browser."""
+        webbrowser.open(url)
+
+    def _format_event_menu_title(self, event) -> str:
+        """Format an event label for tray menus."""
+        start_time = event.start_time.strftime("%Y-%m-%d %H:%M")
+        summary = getattr(event, "summary", "Untitled")
+        return f"{start_time} - {summary}"
+
+    def _get_event_display_start_time(self, event, now: DateTimeType) -> DateTimeType | None:
+        """Compute an event's display start time for menus.
+
+        - Returns None for events that should not be shown (already in the past).
+        - For recurring events whose original DTSTART is long in the past, tries to
+          compute today's occurrence in the event's original timezone (same logic as tray icon).
+        """
+        # Modified instances already have the corrected start_time.
+        if getattr(event, "is_modified_instance", False) is True:
+            return event.start_time if event.start_time > now else None
+
+        start_time = event.start_time
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=now.tzinfo)
+
+        if start_time > now:
+            return start_time
+
+        # Skip events that are already in the past (including earlier today).
+        time_until_event = (start_time - now).total_seconds() / 60
+        if time_until_event >= -1440:
+            return None
+
+        # Attempt to compute today's occurrence for recurring events with DTSTART far in the past.
+        try:
+            event_time = start_time.time()
+            original_timezone = start_time.tzinfo
+            today_date = now.astimezone(original_timezone).date()
+            today_occurrence = _create_timezone_aware_datetime(
+                today_date, event_time, original_timezone
+            )
+            return today_occurrence if today_occurrence > now else None
+        except Exception as e:
+            logger.error(f"Error calculating recurring event time for menu: {e}")
+            return None
+
+    def _get_event_menu_entries(self):
+        """Get (title, url) entries for upcoming events menus."""
+        now = datetime.datetime.now().astimezone()
+        entries: list[tuple[DateTimeType, str, str | None]] = []
+
+        for event in self._get_events_snapshot():
+            display_start = self._get_event_display_start_time(event, now)
+            if display_start is None:
+                continue
+
+            summary = getattr(event, "summary", "Untitled")
+            title = f"{display_start:%Y-%m-%d %H:%M} - {summary}"
+            entries.append((display_start, title, event.get_url()))
+
+        entries.sort(key=lambda x: x[0])
+        return [(title, url) for _dt, title, url in entries]
+
+    def _build_pystray_event_items(self):
+        """Build pystray menu items for events (dynamic)."""
+        entries = self._get_event_menu_entries()
+        if not entries:
+            return (pystray.MenuItem("No upcoming events", None, enabled=False),)
+
+        items = []
+        for title, url in entries:
+            if url:
+                items.append(
+                    pystray.MenuItem(
+                        title,
+                        lambda _icon, _item, url=url: self._open_url(url),
+                    )
+                )
+            else:
+                items.append(pystray.MenuItem(title, None, enabled=False))
+
+        return tuple(items)
+
+    def _build_macos_events_menu(self):
+        """Build the macOS left-click menu (events list)."""
+        import AppKit  # type: ignore
+
+        menu = AppKit.NSMenu.alloc().init()
+        entries = self._get_event_menu_entries()
+        if not entries:
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "No upcoming events", None, ""
+            )
+            item.setEnabled_(False)
+            menu.addItem_(item)
+            return menu
+
+        for title, url in entries:
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, "onOpenEvent:", ""
+            )
+            item.setTarget_(self.tray_icon._handler)  # type: ignore[attr-defined]  # noqa: SLF001
+            if url:
+                item.setRepresentedObject_(url)
+            else:
+                item.setEnabled_(False)
+            menu.addItem_(item)
+
+        return menu
+
+    def _build_macos_main_menu(self):
+        """Build the macOS right-click menu (controls)."""
+        import AppKit  # type: ignore
+
+        menu = AppKit.NSMenu.alloc().init()
+
+        settings = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Settings", "onSettings:", ""
+        )
+        settings.setTarget_(self.tray_icon._handler)  # type: ignore[attr-defined]  # noqa: SLF001
+        menu.addItem_(settings)
+
+        force_sync = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Force Sync", "onForceSync:", ""
+        )
+        force_sync.setTarget_(self.tray_icon._handler)  # type: ignore[attr-defined]  # noqa: SLF001
+        menu.addItem_(force_sync)
+
+        menu.addItem_(AppKit.NSMenuItem.separatorItem())
+
+        exit_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Exit", "onExit:", ""
+        )
+        exit_item.setTarget_(self.tray_icon._handler)  # type: ignore[attr-defined]  # noqa: SLF001
+        menu.addItem_(exit_item)
+
+        return menu
+
     def _show_settings(self, _=None):
         """Show settings dialog."""
         dialog = SettingsDialog(self.config_manager)
@@ -678,7 +1039,11 @@ class TrayApp:
         try:
             if self.tray_icon is None:
                 return
-            new_icon = self._create_icon_image()
+            new_icon = (
+                self._create_macos_icon_image()
+                if sys.platform == "darwin"
+                else self._create_icon_image()
+            )
             self.tray_icon.icon = new_icon
         except Exception as e:
             logger.error(f"Error updating tray icon: {e}")

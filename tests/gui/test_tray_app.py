@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.calendar_sync.caldav_client import CalendarEvent
 from src.gui.tray_app import SettingsDialog, TrayApp
 
 
@@ -151,6 +152,49 @@ class TestSettingsDialog:
 
 class TestTrayApp:
     """Tests for the TrayApp class."""
+
+    @patch("src.gui.tray_app.QtWidgets.QApplication")
+    @patch("src.gui.tray_app.NotificationManager")
+    @patch("src.gui.tray_app.CalDAVClient")
+    @patch("src.gui.tray_app.ConfigManager")
+    def test_event_menu_entries_include_urls_when_present(
+        self,
+        mock_config_manager,
+        mock_caldav_client,
+        mock_notification_manager,
+        mock_qapp,
+    ):
+        """Events menu entries should include URL when location is a link."""
+        mock_config_manager.return_value.get_config.return_value = {
+            "caldav": {"url": "", "username": "", "password": "", "calendar_name": ""},
+            "sync": {"interval_minutes": 5, "sync_hours": 24},
+            "notifications": {"intervals_minutes": [1, 5], "sound_enabled": True},
+            "auto_open_urls": True,
+        }
+
+        tray_app = TrayApp()
+
+        e1 = CalendarEvent(
+            uid="1",
+            summary="Daily standup",
+            start_time=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc),
+            end_time=datetime(2025, 1, 1, 9, 30, tzinfo=timezone.utc),
+            location="https://meet.example.com/abc",
+        )
+        e2 = CalendarEvent(
+            uid="2",
+            summary="No link meeting",
+            start_time=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+            end_time=datetime(2025, 1, 1, 10, 30, tzinfo=timezone.utc),
+            location="Room 101",
+        )
+
+        tray_app._set_events([e1, e2])
+        entries = tray_app._get_event_menu_entries()
+
+        assert len(entries) == 2
+        assert entries[0][1] == "https://meet.example.com/abc"
+        assert entries[1][1] is None
 
     @patch("src.gui.tray_app.QtWidgets.QApplication")
     @patch("src.gui.tray_app.NotificationManager")

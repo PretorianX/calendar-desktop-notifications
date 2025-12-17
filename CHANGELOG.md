@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed Python module import structure to allow proper execution
 - Improved package structure with __main__.py for module execution 
 - fix(logging): changed default logging level to DEBUG for better troubleshooting
+- feat(ui): on macOS, show event list on tray icon left-click; keep control menu on right-click, and open meeting URLs when clicking an event
 - fix(notifications): tightened notification windows to 0.4 minutes for more precise timing
 - fix(notifications): updated to use only WAV sound files for better compatibility
 - refactor(code): applied black formatting to entire codebase
