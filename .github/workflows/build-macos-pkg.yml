@@ -1,0 +1,57 @@
+name: build-macos-pkg
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+  release:
+    types: [published]
+
+jobs:
+  build-macos-pkg:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    env:
+      APP_NAME: CalendarDesktopNotifications
+      BUNDLE_ID: com.nc.calendar-desktop-notifications
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pipenv
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pipenv
+
+      - name: Install dependencies (pipenv sync)
+        env:
+          PIPENV_IGNORE_VIRTUALENVS: "1"
+        run: |
+          pipenv sync --dev
+
+      - name: Run tests
+        env:
+          PIPENV_IGNORE_VIRTUALENVS: "1"
+        run: |
+          pipenv run pytest
+
+      - name: Build macOS .pkg
+        env:
+          PIPENV_IGNORE_VIRTUALENVS: "1"
+        run: |
+          ./scripts/macos/build_pkg.sh
+
+      - name: Upload .pkg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-pkg
+          path: build/*.pkg
