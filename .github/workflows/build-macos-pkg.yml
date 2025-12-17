@@ -12,7 +12,7 @@ jobs:
   build-macos-pkg:
     runs-on: macos-latest
     permissions:
-      contents: read
+      contents: write
 
     env:
       APP_NAME: CalendarDesktopNotifications
@@ -55,3 +55,18 @@ jobs:
         with:
           name: macos-pkg
           path: build/*.pkg
+
+      - name: Upload .pkg to GitHub Release (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*.pkg
+          fail_on_unmatched_files: true
+
+      - name: Upload .pkg to GitHub Release (published release)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: build/*.pkg
+          fail_on_unmatched_files: true
