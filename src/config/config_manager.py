@@ -17,7 +17,12 @@ class ConfigManager:
     DEFAULT_CONFIG: Dict[str, Any] = {
         "caldav": {"url": "", "username": "", "password": "", "calendar_name": ""},
         "sync": {"interval_minutes": 5, "sync_hours": 24},
-        "notifications": {"intervals_minutes": [1, 5, 10], "sound_enabled": True},
+        "notifications": {
+            "intervals_minutes": [1, 5, 10],
+            "sound_enabled": True,
+            # If false, events declined by the current user will not trigger notifications.
+            "notify_declined": False,
+        },
         "auto_open_urls": True,
     }
 

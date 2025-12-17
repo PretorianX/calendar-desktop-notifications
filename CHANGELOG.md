@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - chore(production): production readiness checklist
 - Type stub dependencies for better type checking
 - Comprehensive linting configuration in setup.cfg
+- feat(notifications): configuration option to enable/disable notifications for declined events (default: disabled)
+- feat(ui): add status and link glyphs to event titles (status at start; link shown when URL is in Location)
 
 ### Changed
 - Migrated from venv to pipenv for dependency management
@@ -64,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix(config): prevent `DEFAULT_CONFIG` mutation by deep-copying defaults and returning defensive copies from `ConfigManager`
 - fix(tray_app): make cached event access thread-safe (lock + snapshot reads) across sync/notification threads and tray icon rendering
 - fix(tests): stabilize tray icon time rendering tests when events are `MagicMock` instances
+- fix(ui): format event start times in local timezone for menus and events dialog (including modified recurring instances)
 - fix(mypy): run mypy via `python -m mypy --explicit-package-bases` to avoid duplicate-module errors with package name `src`
 - fix(calendar_sync): revert to using calendar.date_search method for better compatibility
 - feat(calendar_sync): add debug logging to identify URL issues in caldav_client

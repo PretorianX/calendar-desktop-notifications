@@ -42,6 +42,12 @@ class TestConfigManager(TestCase):
         self.assertIn("sync_hours", self.default_config["sync"])
         self.assertEqual(24, self.default_config["sync"]["sync_hours"])
 
+    def test_default_config_includes_notify_declined(self):
+        """Test that default config includes the notify_declined setting."""
+        self.assertIn("notifications", self.default_config)
+        self.assertIn("notify_declined", self.default_config["notifications"])
+        self.assertEqual(False, self.default_config["notifications"]["notify_declined"])
+
     def test_update_sync_hours(self):
         """Test updating the sync_hours setting."""
         new_config = {"sync": {"sync_hours": 48}}

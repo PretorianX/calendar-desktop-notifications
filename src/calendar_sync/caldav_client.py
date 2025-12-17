@@ -10,6 +10,31 @@ import pytz
 logger = logging.getLogger(__name__)
 
 
+def _normalize_attendee_identifier(raw: str) -> str:
+    """Normalize iCalendar attendee identifiers for matching.
+
+    Typical attendee values look like: "mailto:user@example.com".
+    """
+    value = raw.strip().lower()
+    if value.startswith("mailto:"):
+        value = value[len("mailto:") :]
+    return value
+
+
+def _extract_partstat(attendee: Any) -> Optional[str]:
+    """Extract PARTSTAT parameter from an ATTENDEE vobject line."""
+    params = getattr(attendee, "params", None)
+    if not isinstance(params, dict):
+        return None
+
+    raw = params.get("PARTSTAT") or params.get("partstat")
+    if isinstance(raw, list) and raw:
+        raw = raw[0]
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip().upper()
+    return None
+
+
 class CalendarEvent:
     """Represents a calendar event."""
 
@@ -21,6 +46,8 @@ class CalendarEvent:
         end_time: datetime.datetime,
         location: Optional[str] = None,
         description: Optional[str] = None,
+        participation_status: Optional[str] = None,
+        is_declined: bool = False,
     ):
         """Initialize a calendar event."""
         self.uid = uid
@@ -29,6 +56,10 @@ class CalendarEvent:
         self.end_time = end_time
         self.location = location
         self.description = description
+        # Participation status (PARTSTAT) for the current user, if detected.
+        # Typical values: ACCEPTED, DECLINED, NEEDS-ACTION, TENTATIVE.
+        self.participation_status = participation_status
+        self.is_declined = is_declined
         # Metadata used by CalDAV parsing / recurrence handling.
         self.is_modified_instance: bool = False
         self.recurrence_id: Optional[datetime.datetime] = None
@@ -212,6 +243,33 @@ class CalDAVClient:
                         else "No Title"
                     )
 
+                    # Extract the current user's participation status (PARTSTAT) from ATTENDEE.
+                    # Typical values: ACCEPTED, DECLINED, NEEDS-ACTION, TENTATIVE.
+                    participation_status: Optional[str] = None
+                    current_user = _normalize_attendee_identifier(self.username or "")
+                    if current_user:
+                        raw_attendee_list = getattr(event_data, "attendee_list", None)
+                        if isinstance(raw_attendee_list, list) and raw_attendee_list:
+                            attendees: List[Any] = raw_attendee_list
+                        elif hasattr(event_data, "attendee"):
+                            attendees = [event_data.attendee]
+                        else:
+                            attendees = []
+
+                        for attendee in attendees:
+                            attendee_value = getattr(attendee, "value", None)
+                            if not isinstance(attendee_value, str) or not attendee_value:
+                                continue
+
+                            if (
+                                _normalize_attendee_identifier(attendee_value)
+                                == current_user
+                            ):
+                                participation_status = _extract_partstat(attendee)
+                                break
+
+                    is_declined = participation_status == "DECLINED"
+
                     # Get start time
                     start_time = event_data.dtstart.value
 
@@ -306,6 +364,8 @@ class CalDAVClient:
                         end_time=end_time,
                         location=location,
                         description=description,
+                        participation_status=participation_status,
+                        is_declined=is_declined,
                     )
 
                     # Add metadata for recurring event handling

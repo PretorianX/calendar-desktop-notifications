@@ -223,6 +223,49 @@ class TestCalDAVClient:
         assert events[0].summary == "Test Event"
 
     @patch("caldav.DAVClient")
+    def test_get_events_marks_declined_for_current_user(self, mock_dav_client):
+        """Events declined by the current user should be marked as declined."""
+        # Mock setup
+        mock_principal = MagicMock()
+        mock_calendar = MagicMock()
+        mock_calendar.name = "Test Calendar"
+
+        mock_event = MagicMock()
+        mock_event.vobject_instance.vevent.uid.value = "declined-uid"
+        mock_event.vobject_instance.vevent.summary.value = "Declined Event"
+
+        start_time = datetime.datetime.now(pytz.UTC)
+        end_time = start_time + datetime.timedelta(hours=1)
+        mock_event.vobject_instance.vevent.dtstart.value = start_time
+        mock_event.vobject_instance.vevent.dtend.value = end_time
+
+        attendee = MagicMock()
+        attendee.value = "mailto:test@example.com"
+        attendee.params = {"PARTSTAT": ["DECLINED"]}
+        mock_event.vobject_instance.vevent.attendee_list = [attendee]
+
+        mock_calendar.date_search.return_value = [mock_event]
+        mock_principal.calendars.return_value = [mock_calendar]
+        mock_dav_client.return_value.principal.return_value = mock_principal
+
+        client = CalDAVClient(
+            url="https://example.com/caldav",
+            username="test@example.com",
+            password="test123",
+            calendar_name="Test Calendar",
+        )
+        client.connect()
+
+        today = datetime.datetime.now(pytz.UTC)
+        tomorrow = today + datetime.timedelta(days=1)
+        events = client.get_events(today, tomorrow)
+
+        assert len(events) == 1
+        assert events[0].uid == "declined-uid"
+        assert events[0].is_declined is True
+        assert events[0].participation_status == "DECLINED"
+
+    @patch("caldav.DAVClient")
     def test_get_events_with_timezone_aware_dates(self, mock_dav_client):
         """Test that get_events correctly handles timezone-aware dates."""
         # Mock setup

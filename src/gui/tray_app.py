@@ -295,6 +295,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self.sound_enabled.setChecked(self.config["notifications"]["sound_enabled"])
         layout.addWidget(self.sound_enabled)
 
+        self.notify_declined = QtWidgets.QCheckBox("Notify for Declined Events")
+        self.notify_declined.setChecked(self.config["notifications"]["notify_declined"])
+        layout.addWidget(self.notify_declined)
+
         self.auto_open_urls = QtWidgets.QCheckBox("Auto-open Meeting URLs")
         self.auto_open_urls.setChecked(self.config["auto_open_urls"])
         layout.addWidget(self.auto_open_urls)
@@ -409,6 +413,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 "notifications": {
                     "sound_enabled": self.sound_enabled.isChecked(),
                     "intervals_minutes": notification_intervals,
+                    "notify_declined": self.notify_declined.isChecked(),
                 },
                 "auto_open_urls": self.auto_open_urls.isChecked(),
             }
@@ -457,6 +462,12 @@ class TrayApp:
 
         # Tray icon is created on `run()` to avoid side effects during construction.
         self.tray_icon = None
+
+    def _events_for_notifications(self, events):
+        """Filter events according to notification settings."""
+        if self.config["notifications"]["notify_declined"]:
+            return events
+        return [event for event in events if not event.is_declined]
 
     def _set_events(self, events):
         """Atomically replace cached events."""
@@ -777,6 +788,25 @@ class TrayApp:
         """Show upcoming events in a dialog."""
         events = self._get_events_snapshot()
 
+        def _status_glyph(event) -> str:
+            """Return a status glyph for the current user for this event."""
+            status = getattr(event, "participation_status", None)
+            if isinstance(status, str):
+                status = status.strip().upper()
+            else:
+                status = None
+
+            # Default to "not yet accepted" when unknown.
+            if status in (None, "", "NEEDS-ACTION"):
+                return "○"
+            if status == "ACCEPTED":
+                return "✓"
+            if status == "DECLINED":
+                return "✗"
+            if status == "TENTATIVE":
+                return "△"
+            return "○"
+
         class EventsDialog(QtWidgets.QDialog):
             def __init__(self, events, parent=None):
                 super().__init__(parent)
@@ -801,10 +831,40 @@ class TrayApp:
                     layout.addWidget(QtWidgets.QLabel("No upcoming events found."))
                 else:
                     event_list = QtWidgets.QListWidget()
+                    local_tz = datetime.datetime.now().astimezone().tzinfo
 
                     for event in self.events:
-                        start_time = event.start_time.strftime("%Y-%m-%d %H:%M")
-                        event_list.addItem(f"{start_time} - {event.summary}")
+                        start_dt = event.start_time
+                        if start_dt.tzinfo is None:
+                            start_dt = start_dt.replace(tzinfo=local_tz)
+                        start_time = start_dt.astimezone(local_tz).strftime("%Y-%m-%d %H:%M")
+
+                        # Left side: status glyph + time + summary
+                        left_text = f"{_status_glyph(event)} {start_time} - {event.summary}"
+
+                        # Right side: link glyph if URL is in Location field
+                        link_glyph = "🔗" if event.get_url() else ""
+
+                        # Create a widget so we can right-align the link glyph.
+                        row = QtWidgets.QWidget()
+                        row_layout = QtWidgets.QHBoxLayout(row)
+                        row_layout.setContentsMargins(6, 2, 6, 2)
+
+                        left_label = QtWidgets.QLabel(left_text)
+                        right_label = QtWidgets.QLabel(link_glyph)
+                        right_label.setAlignment(
+                            QtCore.Qt.AlignmentFlag.AlignRight
+                            | QtCore.Qt.AlignmentFlag.AlignVCenter
+                        )
+
+                        row_layout.addWidget(left_label)
+                        row_layout.addStretch(1)
+                        row_layout.addWidget(right_label)
+
+                        item = QtWidgets.QListWidgetItem()
+                        item.setSizeHint(row.sizeHint())
+                        event_list.addItem(item)
+                        event_list.setItemWidget(item, row)
 
                     layout.addWidget(event_list)
 
@@ -823,9 +883,23 @@ class TrayApp:
 
     def _format_event_menu_title(self, event) -> str:
         """Format an event label for tray menus."""
-        start_time = event.start_time.strftime("%Y-%m-%d %H:%M")
+        local_tz = datetime.datetime.now().astimezone().tzinfo
+        start_dt = event.start_time
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=local_tz)
+        start_time = start_dt.astimezone(local_tz).strftime("%Y-%m-%d %H:%M")
         summary = getattr(event, "summary", "Untitled")
         return f"{start_time} - {summary}"
+
+    def _to_local_time(self, dt: DateTimeType, local_tz) -> DateTimeType:
+        """Convert datetime to local timezone for display.
+
+        Keep internal event times in their original timezone; only convert when formatting for UI.
+        If datetime is naive, assume it's already in local time.
+        """
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=local_tz)
+        return dt.astimezone(local_tz)
 
     def _get_event_display_start_time(self, event, now: DateTimeType) -> DateTimeType | None:
         """Compute an event's display start time for menus.
@@ -866,7 +940,25 @@ class TrayApp:
     def _get_event_menu_entries(self):
         """Get (title, url) entries for upcoming events menus."""
         now = datetime.datetime.now().astimezone()
+        local_tz = now.tzinfo
         entries: list[tuple[DateTimeType, str, str | None]] = []
+
+        def _status_glyph(event) -> str:
+            status = getattr(event, "participation_status", None)
+            if isinstance(status, str):
+                status = status.strip().upper()
+            else:
+                status = None
+
+            if status in (None, "", "NEEDS-ACTION"):
+                return "○"
+            if status == "ACCEPTED":
+                return "✓"
+            if status == "DECLINED":
+                return "✗"
+            if status == "TENTATIVE":
+                return "△"
+            return "○"
 
         for event in self._get_events_snapshot():
             display_start = self._get_event_display_start_time(event, now)
@@ -874,8 +966,12 @@ class TrayApp:
                 continue
 
             summary = getattr(event, "summary", "Untitled")
-            title = f"{display_start:%Y-%m-%d %H:%M} - {summary}"
-            entries.append((display_start, title, event.get_url()))
+            local_start = self._to_local_time(display_start, local_tz)
+            url = event.get_url()
+            title = f"{_status_glyph(event)} {local_start:%Y-%m-%d %H:%M} - {summary}"
+            if url:
+                title = f"{title} 🔗"
+            entries.append((local_start, title, url))
 
         entries.sort(key=lambda x: x[0])
         return [(title, url) for _dt, title, url in entries]
@@ -1006,11 +1102,11 @@ class TrayApp:
             sync_end = now + datetime.timedelta(hours=self.config["sync"]["sync_hours"])
 
             # Get events for configured sync period
-            events = self.caldav_client.get_events(now, sync_end)
+            events = list(self.caldav_client.get_events(now, sync_end))
             self._set_events(events)
 
             # Initial check for notifications
-            self.notification_manager.check_events(events)
+            self.notification_manager.check_events(self._events_for_notifications(events))
 
             # Update tray icon with time to next meeting
             self._update_tray_icon()
@@ -1027,7 +1123,7 @@ class TrayApp:
         events = self._get_events_snapshot()
         if events:
             logger.debug("Performing notification check on cached events")
-            self.notification_manager.check_events(events)
+            self.notification_manager.check_events(self._events_for_notifications(events))
 
             # Update the tray icon to reflect current time until next meeting
             self._update_tray_icon()

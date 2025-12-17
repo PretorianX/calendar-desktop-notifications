@@ -30,7 +30,11 @@ class TestSettingsDialog:
                 "calendar_name": "Test Calendar",
             },
             "sync": {"interval_minutes": 5, "sync_hours": 24},
-            "notifications": {"intervals_minutes": [1, 5, 10], "sound_enabled": True},
+            "notifications": {
+                "intervals_minutes": [1, 5, 10],
+                "sound_enabled": True,
+                "notify_declined": False,
+            },
             "auto_open_urls": True,
         }
 
@@ -157,6 +161,55 @@ class TestTrayApp:
     @patch("src.gui.tray_app.NotificationManager")
     @patch("src.gui.tray_app.CalDAVClient")
     @patch("src.gui.tray_app.ConfigManager")
+    def test_event_menu_entries_render_in_local_timezone(
+        self,
+        mock_config_manager,
+        _mock_caldav_client,
+        _mock_notification_manager,
+        _mock_qapp,
+    ):
+        """Event menu titles should be formatted in local timezone (not event TZ)."""
+        mock_config_manager.return_value.get_config.return_value = {
+            "caldav": {"url": "", "username": "", "password": "", "calendar_name": ""},
+            "sync": {"interval_minutes": 5, "sync_hours": 24},
+            "notifications": {
+                "intervals_minutes": [1, 5],
+                "sound_enabled": True,
+                "notify_declined": False,
+            },
+            "auto_open_urls": True,
+        }
+
+        tray_app = TrayApp()
+
+        # Event is at 14:00 UTC; local time is UTC+2 -> should display 16:00.
+        e1 = CalendarEvent(
+            uid="1",
+            summary="Architects weekly meeting",
+            start_time=datetime(2025, 12, 17, 14, 0, tzinfo=timezone.utc),
+            end_time=datetime(2025, 12, 17, 15, 0, tzinfo=timezone.utc),
+            location="https://meet.example.com/architecture-sync",
+        )
+        tray_app._set_events([e1])
+
+        local_tz = timezone(timedelta(hours=2))
+        fixed_now_local = datetime(2025, 12, 17, 13, 0, tzinfo=local_tz)
+        with patch("src.gui.tray_app.datetime.datetime") as mock_datetime_class:
+            mock_now = MagicMock()
+            mock_now.astimezone.return_value = fixed_now_local
+            mock_datetime_class.now.return_value = mock_now
+
+            entries = tray_app._get_event_menu_entries()
+
+        assert len(entries) == 1
+        title, url = entries[0]
+        assert title.startswith("○ 2025-12-17 16:00 - Architects weekly meeting")
+        assert url == "https://meet.example.com/architecture-sync"
+
+    @patch("src.gui.tray_app.QtWidgets.QApplication")
+    @patch("src.gui.tray_app.NotificationManager")
+    @patch("src.gui.tray_app.CalDAVClient")
+    @patch("src.gui.tray_app.ConfigManager")
     def test_event_menu_entries_include_urls_when_present(
         self,
         mock_config_manager,
@@ -168,11 +221,17 @@ class TestTrayApp:
         mock_config_manager.return_value.get_config.return_value = {
             "caldav": {"url": "", "username": "", "password": "", "calendar_name": ""},
             "sync": {"interval_minutes": 5, "sync_hours": 24},
-            "notifications": {"intervals_minutes": [1, 5], "sound_enabled": True},
+            "notifications": {
+                "intervals_minutes": [1, 5],
+                "sound_enabled": True,
+                "notify_declined": False,
+            },
             "auto_open_urls": True,
         }
 
         tray_app = TrayApp()
+
+        fixed_now = datetime(2025, 1, 1, 8, 0, tzinfo=timezone.utc)
 
         e1 = CalendarEvent(
             uid="1",
@@ -190,7 +249,11 @@ class TestTrayApp:
         )
 
         tray_app._set_events([e1, e2])
-        entries = tray_app._get_event_menu_entries()
+        with patch("src.gui.tray_app.datetime.datetime") as mock_datetime_class:
+            mock_now = MagicMock()
+            mock_now.astimezone.return_value = fixed_now
+            mock_datetime_class.now.return_value = mock_now
+            entries = tray_app._get_event_menu_entries()
 
         assert len(entries) == 2
         assert entries[0][1] == "https://meet.example.com/abc"
@@ -217,7 +280,11 @@ class TestTrayApp:
                 "calendar_name": "Test Calendar",
             },
             "sync": {"interval_minutes": 5, "sync_hours": 48},  # Custom sync hours
-            "notifications": {"intervals_minutes": [1, 5, 10], "sound_enabled": True},
+            "notifications": {
+                "intervals_minutes": [1, 5, 10],
+                "sound_enabled": True,
+                "notify_declined": False,
+            },
             "auto_open_urls": True,
         }
         mock_config_manager.return_value.get_config.return_value = mock_config
@@ -282,7 +349,11 @@ class TestTrayApp:
                 "calendar_name": "Test Calendar",
             },
             "sync": {"interval_minutes": 5, "sync_hours": 24},
-            "notifications": {"intervals_minutes": [1, 5, 10], "sound_enabled": True},
+            "notifications": {
+                "intervals_minutes": [1, 5, 10],
+                "sound_enabled": True,
+                "notify_declined": False,
+            },
             "auto_open_urls": True,
         }
         mock_config_manager.return_value.get_config.return_value = mock_config
@@ -372,7 +443,11 @@ class TestTrayApp:
         mock_config_manager.return_value.get_config.return_value = {
             "caldav": {"url": "", "username": "", "password": "", "calendar_name": ""},
             "sync": {"interval_minutes": 5, "sync_hours": 24},
-            "notifications": {"intervals_minutes": [1, 5], "sound_enabled": True},
+            "notifications": {
+                "intervals_minutes": [1, 5],
+                "sound_enabled": True,
+                "notify_declined": False,
+            },
             "auto_open_urls": True,
         }
 
@@ -380,14 +455,16 @@ class TestTrayApp:
         tray_app = TrayApp()
 
         # Test scenario: with events
-        tray_app._set_events(["event1", "event2"])
+        e1 = MagicMock(spec=CalendarEvent)
+        e1.is_declined = False
+        e2 = MagicMock(spec=CalendarEvent)
+        e2.is_declined = False
+        tray_app._set_events([e1, e2])
 
         tray_app._check_notifications()
 
         # Verify notification manager was called
-        mock_notification_manager.return_value.check_events.assert_called_with(
-            ["event1", "event2"]
-        )
+        mock_notification_manager.return_value.check_events.assert_called_with([e1, e2])
 
     @patch("src.gui.tray_app.QtWidgets.QApplication")
     @patch("src.gui.tray_app.NotificationManager")
@@ -409,7 +486,11 @@ class TestTrayApp:
         mock_config_manager.return_value.get_config.return_value = {
             "caldav": {"url": "", "username": "", "password": "", "calendar_name": ""},
             "sync": {"interval_minutes": 5, "sync_hours": 24},
-            "notifications": {"intervals_minutes": [1, 5], "sound_enabled": True},
+            "notifications": {
+                "intervals_minutes": [1, 5],
+                "sound_enabled": True,
+                "notify_declined": False,
+            },
             "auto_open_urls": True,
         }
 
