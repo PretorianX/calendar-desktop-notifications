@@ -1,15 +1,13 @@
 # Calendar Desktop Notifications
 
-[![CI](https://github.com/yourname/calendar-desktop-notifications/actions/workflows/ci.yml/badge.svg)](https://github.com/yourname/calendar-desktop-notifications/actions/workflows/ci.yml)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A cross-platform desktop application that syncs with CalDAV calendars and provides desktop notifications for upcoming events.
+A desktop application that syncs with CalDAV calendars and provides desktop notifications for upcoming events.
 
 ## Features
 
-- 🖥️ **Cross-platform**: Works on Windows, macOS, and Linux
 - 🔔 **Smart Notifications**: Get alerts 1, 5, and 10 minutes before meetings
 - 🔄 **Auto-sync**: Continuously syncs with your CalDAV server
 - 🌐 **URL Auto-open**: Automatically opens meeting URLs in your browser
@@ -64,10 +62,8 @@ Download the latest release for your platform from the [releases page](https://g
 
 ## Configuration
 
-The application stores its configuration in:
-- **Windows**: `%APPDATA%\calendar-desktop-notifications\`
+On macOS, the application stores its configuration in:
 - **macOS**: `~/Library/Application Support/calendar-desktop-notifications/`
-- **Linux**: `~/.config/calendar-desktop-notifications/`
 
 ### Configuration Options
 

@@ -44,7 +44,7 @@ calendar-desktop-notifications/
 ├── tests/                   # Test suite
 ├── docs/                    # Documentation
 ├── sounds/                  # Notification sounds
-└── .github/workflows/       # CI/CD pipelines
+└── .github/                 # GitHub configuration
 ```
 
 ## Development Workflow
@@ -126,7 +126,6 @@ pre-commit run --all-files
 ### Key Design Decisions
 
 - **Threading**: Separate threads for sync and notifications to prevent blocking
-- **Platform Support**: Abstraction layers for cross-platform compatibility
 - **Configuration**: YAML format for human-readable settings
 - **Logging**: Structured logging with rotating file handlers
 
@@ -153,9 +152,7 @@ pre-commit run --all-files
 - Verify end-to-end workflows
 
 ### Platform Testing
-- Test on Windows, macOS, and Linux
-- Verify platform-specific features
-- Check installer functionality
+- Current development/testing is done on macOS.
 
 ## Release Process
 
@@ -163,7 +160,7 @@ pre-commit run --all-files
 2. Update CHANGELOG.md
 3. Create a git tag: `git tag v0.1.0`
 4. Push tag: `git push origin v0.1.0`
-5. GitHub Actions will build and create release
+5. Build and create a release artifact (manual process)
 
 ## Debugging
 

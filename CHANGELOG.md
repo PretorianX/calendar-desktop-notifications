@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Timezone and recurring event support
 - Unit tests for core components
 - Test connection button for CalDAV server validation
-- Cross-platform start scripts (shell, batch, Python)
+- Start scripts (shell, batch, Python)
 - Enhanced .gitignore file with pipenv-specific patterns
 - feat(sync): configurable sync period to adjust how many hours of upcoming events to fetch
 - feat(notifications): configurable notification times via comma-delimited input
@@ -31,7 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat(ui): enhanced tray icon with larger minutes display and color-coding (green > 10min, yellow 5-10min, red < 5min)
 - chore(production): comprehensive linting setup with flake8, black, mypy, isort
 - chore(production): pre-commit hooks for automated code quality checks
-- chore(production): CI/CD pipelines with GitHub Actions for testing and releases
 - chore(production): automated testing with pytest and coverage reporting
 - chore(production): PyInstaller configuration for building executables
 - docs(production): comprehensive user guide with setup and usage instructions
@@ -50,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added pipenv scripts for easier execution
 - Fixed Python module import structure to allow proper execution
 - Improved package structure with __main__.py for module execution 
+- Removed GitHub Actions workflows and cross-platform claims from documentation
 - fix(logging): changed default logging level to DEBUG for better troubleshooting
 - feat(ui): on macOS, show event list on tray icon left-click; keep control menu on right-click, and open meeting URLs when clicking an event
 - fix(notifications): tightened notification windows to 0.4 minutes for more precise timing
