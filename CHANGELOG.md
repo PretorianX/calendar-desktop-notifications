@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial project setup
 - ci(release): GitHub Actions workflow to build a macOS .pkg installer
 - ci(release): upload built macOS .pkg to GitHub Release assets
+- ci(release): allow manual upload of macOS .pkg to an existing release tag
 - Project structure and dependencies
 - README with features and installation instructions
 - Configuration management system with YAML support

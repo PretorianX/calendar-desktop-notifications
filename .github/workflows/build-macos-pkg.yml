@@ -2,6 +2,11 @@ name: build-macos-pkg
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach built .pkg to this release tag (e.g. v1.0.0). Leave empty to skip."
+        required: false
+        default: ""
   push:
     tags:
       - "v*.*.*"
@@ -68,5 +73,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
+          files: build/*.pkg
+          fail_on_unmatched_files: true
+
+      - name: Upload .pkg to GitHub Release (manual dispatch)
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
           files: build/*.pkg
           fail_on_unmatched_files: true
