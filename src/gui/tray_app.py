@@ -6,10 +6,9 @@ import os
 import sys
 import threading
 import time
-from typing import Optional
+from datetime import datetime as DateTimeType
 
 import pystray
-import pytz
 from PIL import Image, ImageDraw, ImageFont
 from PyQt6 import QtCore, QtWidgets
 
@@ -18,9 +17,6 @@ from src.config.config_manager import ConfigManager
 from src.notification.notification_manager import NotificationManager
 
 logger = logging.getLogger(__name__)
-
-
-
 
 
 # Add function to activate application on macOS
@@ -326,10 +322,21 @@ class TrayApp:
         self.sync_thread = None
         self.notification_thread = None
         self.running = True
+        self._events_lock = threading.RLock()
         self._events = []
 
-        # Initialize tray icon
-        self._create_tray_icon()
+        # Tray icon is created on `run()` to avoid side effects during construction.
+        self.tray_icon = None
+
+    def _set_events(self, events):
+        """Atomically replace cached events."""
+        with self._events_lock:
+            self._events = events
+
+    def _get_events_snapshot(self):
+        """Get a snapshot of cached events (thread-safe)."""
+        with self._events_lock:
+            return list(self._events)
 
     def _create_tray_icon(self):
         """Create system tray icon."""
@@ -373,6 +380,8 @@ class TrayApp:
 
     def _create_icon_image(self):
         """Create icon image for the tray."""
+        events = self._get_events_snapshot()
+
         # Create a simple calendar icon
         width = 64
         height = 64
@@ -388,8 +397,8 @@ class TrayApp:
         dc.rectangle((8, 8, width - 8, 20), fill=(0, 80, 140), outline=(0, 0, 0))
 
         # Display time until next meeting if available
-        if self._events:
-            next_event = self._get_next_event()
+        if events:
+            next_event = self._get_next_event(events)
             if next_event:
                 self._add_time_to_icon(dc, next_event, width, height)
 
@@ -406,8 +415,13 @@ class TrayApp:
         """
         now = datetime.datetime.now().astimezone()
 
-        # Use the adjusted time for recurring events if available
-        event_time = getattr(event, "_temp_display_time", event.start_time)
+        # Use the adjusted time for recurring events if available.
+        # NOTE: be defensive with MagicMock events in tests: MagicMock will "have"
+        # any attribute, so only honor the temp time if it's a real datetime.
+        temp_time = getattr(event, "_temp_display_time", None)
+        event_time = (
+            temp_time if isinstance(temp_time, DateTimeType) else event.start_time
+        )
         minutes_until = int((event_time - now).total_seconds() / 60)
 
         # Create text to display - only show minutes
@@ -433,8 +447,6 @@ class TrayApp:
         font_size = 32  # Increased from 16 to 32
         try:
             # Try to use a system font - fallback to default if not available
-            from PIL import ImageFont
-
             try:
                 font = ImageFont.truetype("Arial Bold", font_size)
             except IOError:
@@ -463,7 +475,7 @@ class TrayApp:
             # Fallback - draw a simpler version
             dc.text((width // 2, height // 2), text, fill=(255, 255, 255))
 
-    def _get_next_event(self):
+    def _get_next_event(self, events):
         """Get the next upcoming event.
 
         Returns:
@@ -476,10 +488,11 @@ class TrayApp:
         closest_event = None
         min_time_until = float("inf")
 
-        for event in self._events:
+        for event in events:
             # For modified instances (events with RECURRENCE-ID), the CalDAV client has already
             # corrected the start_time to the actual event time, so treat them as regular events
-            if hasattr(event, 'is_modified_instance') and event.is_modified_instance:
+            is_modified_instance = getattr(event, "is_modified_instance", False) is True
+            if is_modified_instance:
                 logger.debug(
                     f"Event '{event.summary}' is a modified instance with corrected time: {event.start_time} "
                     f"(RECURRENCE-ID: {getattr(event, 'recurrence_id', 'N/A')}). "
@@ -492,18 +505,18 @@ class TrayApp:
                         min_time_until = time_until
                         closest_event = event
                 continue
-            
+
             # Skip events that are already over
             if event.start_time < now:
                 # For events with start times far in the past, check if they might be recurring events
                 time_until_event = (event.start_time - now).total_seconds() / 60
                 if time_until_event < -1440:  # More than 1 day in the past
-                        
+
                     # Try to determine if this event recurs today
                     try:
                         # Get the time component from the original event
                         event_time = event.start_time.time()
-                        
+
                         # FIXED: Use the original event's timezone, not local timezone
                         original_timezone = event.start_time.tzinfo
 
@@ -539,6 +552,7 @@ class TrayApp:
 
     def _show_events(self, _=None):
         """Show upcoming events in a dialog."""
+        events = self._get_events_snapshot()
 
         class EventsDialog(QtWidgets.QDialog):
             def __init__(self, events, parent=None):
@@ -575,7 +589,7 @@ class TrayApp:
                 close_button.clicked.connect(self.accept)
                 layout.addWidget(close_button)
 
-        dialog = EventsDialog(self._events)
+        dialog = EventsDialog(events)
         # Activate app when dialog is shown
         activate_app_on_macos()
         dialog.exec()
@@ -620,7 +634,8 @@ class TrayApp:
     def _exit(self, _=None):
         """Exit the application."""
         self.running = False
-        self.tray_icon.stop()
+        if self.tray_icon is not None:
+            self.tray_icon.stop()
         self.qt_app.quit()
 
     def _sync_calendar(self):
@@ -631,7 +646,7 @@ class TrayApp:
 
             # Get events for configured sync period
             events = self.caldav_client.get_events(now, sync_end)
-            self._events = events
+            self._set_events(events)
 
             # Initial check for notifications
             self.notification_manager.check_events(events)
@@ -648,9 +663,10 @@ class TrayApp:
 
     def _check_notifications(self):
         """Check for notifications on already synced events."""
-        if self._events:
+        events = self._get_events_snapshot()
+        if events:
             logger.debug("Performing notification check on cached events")
-            self.notification_manager.check_events(self._events)
+            self.notification_manager.check_events(events)
 
             # Update the tray icon to reflect current time until next meeting
             self._update_tray_icon()
@@ -660,6 +676,8 @@ class TrayApp:
     def _update_tray_icon(self):
         """Update the tray icon with current time until next meeting."""
         try:
+            if self.tray_icon is None:
+                return
             new_icon = self._create_icon_image()
             self.tray_icon.icon = new_icon
         except Exception as e:
@@ -702,6 +720,9 @@ class TrayApp:
 
     def run(self):
         """Run the application."""
+        # Create tray icon at start-up (side-effectful / platform-specific)
+        self._create_tray_icon()
+
         # Start sync thread
         self.sync_thread = threading.Thread(target=self._sync_thread_func)
         self.sync_thread.daemon = True
@@ -723,6 +744,8 @@ class TrayApp:
                 logger.error(f"Error updating tray icon during startup: {e}")
 
         # Run tray icon
+        if self.tray_icon is None:
+            raise RuntimeError("Tray icon was not initialized")
         self.tray_icon.run()
 
 
@@ -759,22 +782,23 @@ def main():
 if __name__ == "__main__":
     main()
 
+
 def _create_timezone_aware_datetime(date_obj, time_obj, timezone_obj):
     """Create a timezone-aware datetime, handling different timezone types.
-    
+
     Args:
         date_obj: date object
         time_obj: time object
         timezone_obj: timezone object (could be pytz, _tzicalvtz, etc.)
-        
+
     Returns:
         timezone-aware datetime object
     """
     # Combine date and time first
     naive_dt = datetime.datetime.combine(date_obj, time_obj)
-    
+
     # Handle different timezone types
-    if hasattr(timezone_obj, 'localize'):
+    if hasattr(timezone_obj, "localize"):
         # Standard pytz timezone
         return timezone_obj.localize(naive_dt)
     else:

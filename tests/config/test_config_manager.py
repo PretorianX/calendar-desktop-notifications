@@ -50,6 +50,18 @@ class TestConfigManager(TestCase):
         config = self.config_manager.get_config()
         self.assertEqual(48, config["sync"]["sync_hours"])
 
+    def test_default_config_is_not_mutated_when_updating(self):
+        """Regression: DEFAULT_CONFIG must not be mutated by instance updates."""
+        self.config_manager.update_config({"sync": {"sync_hours": 48}})
+
+        # DEFAULT_CONFIG must remain pristine
+        self.assertEqual(24, ConfigManager.DEFAULT_CONFIG["sync"]["sync_hours"])
+
+        # Also ensure nested dicts aren't shared
+        self.assertIsNot(
+            self.config_manager.config["sync"], ConfigManager.DEFAULT_CONFIG["sync"]
+        )
+
     @patch("builtins.open", new_callable=mock_open)
     @patch("os.path.exists")
     def test_load_config_with_sync_hours(self, mock_exists, mock_file):

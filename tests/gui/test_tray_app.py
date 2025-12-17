@@ -1,21 +1,18 @@
 """Tests for the TrayApp GUI components."""
 
-import sys
+import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from PyQt6 import QtWidgets
+import pytest
 
 from src.gui.tray_app import SettingsDialog, TrayApp
 
-# Initialize Qt Application for testing
-app = (
-    QtWidgets.QApplication(sys.argv)
-    if not QtWidgets.QApplication.instance()
-    else QtWidgets.QApplication.instance()
+
+@pytest.mark.skipif(
+    os.environ.get("ENABLE_QT_TESTS") != "1",
+    reason="Qt GUI tests require a real GUI environment. Set ENABLE_QT_TESTS=1 to run.",
 )
-
-
 class TestSettingsDialog:
     """Tests for the SettingsDialog class."""
 
@@ -339,13 +336,13 @@ class TestTrayApp:
         tray_app = TrayApp()
 
         # Test scenario: with events
-        tray_app._events = ["event1", "event2"]
+        tray_app._set_events(["event1", "event2"])
 
         tray_app._check_notifications()
 
         # Verify notification manager was called
         mock_notification_manager.return_value.check_events.assert_called_with(
-            tray_app._events
+            ["event1", "event2"]
         )
 
     @patch("src.gui.tray_app.QtWidgets.QApplication")

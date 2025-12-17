@@ -4,7 +4,7 @@
 import logging
 import os
 import sys
-from typing import NoReturn
+from typing import Callable, cast
 
 # Add the parent directory to Python path to make 'src' package available
 # This needs to be before importing from src
@@ -16,17 +16,18 @@ if parent_dir not in sys.path:
 from src.gui.tray_app import main as tray_main  # noqa: E402
 
 
-def main() -> NoReturn:
+def main() -> int:
     """Application main entry point."""
     try:
-        tray_main()
+        cast(Callable[[], None], tray_main)()
     except KeyboardInterrupt:
         logging.info("Application terminated by user")
-        sys.exit(0)
+        return 0
     except Exception as e:
         logging.error(f"Fatal error: {e}", exc_info=True)
-        sys.exit(1)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

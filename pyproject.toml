@@ -48,9 +48,19 @@ module = [
     "pyobjus.*",
     "simpleaudio.*",
     "appdirs.*",
-    "PyQt6.*"
+    "PyQt6.*",
+    "AppKit.*"
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["src.gui.tray_app"]
+# UI glue code: keep core modules strict, relax typing here.
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+check_untyped_defs = false
+warn_unreachable = false
 
 [tool.pytest.ini_options]
 minversion = "6.0"

@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Black formatter configuration set to 88 character line length
 
 ### Fixed
+- fix(config): prevent `DEFAULT_CONFIG` mutation by deep-copying defaults and returning defensive copies from `ConfigManager`
+- fix(tray_app): make cached event access thread-safe (lock + snapshot reads) across sync/notification threads and tray icon rendering
+- fix(tests): stabilize tray icon time rendering tests when events are `MagicMock` instances
+- fix(mypy): run mypy via `python -m mypy --explicit-package-bases` to avoid duplicate-module errors with package name `src`
 - fix(calendar_sync): revert to using calendar.date_search method for better compatibility
 - feat(calendar_sync): add debug logging to identify URL issues in caldav_client
 - fix(calendar_sync): prevent authorization errors by handling URL trailing slash inconsistencies

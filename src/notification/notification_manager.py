@@ -7,34 +7,37 @@ import platform
 import subprocess
 import threading
 import webbrowser
-from typing import List
+from typing import Any, Dict, List, Optional, cast
 
 import simpleaudio as sa
-import pytz
 
 from src.calendar_sync.caldav_client import CalendarEvent
 
 logger = logging.getLogger(__name__)
 
 
-def _create_timezone_aware_datetime(date_obj, time_obj, timezone_obj):
+def _create_timezone_aware_datetime(
+    date_obj: datetime.date,
+    time_obj: datetime.time,
+    timezone_obj: Any,
+) -> datetime.datetime:
     """Create a timezone-aware datetime, handling different timezone types.
-    
+
     Args:
         date_obj: date object
         time_obj: time object
         timezone_obj: timezone object (could be pytz, _tzicalvtz, etc.)
-        
+
     Returns:
         timezone-aware datetime object
     """
     # Combine date and time first
     naive_dt = datetime.datetime.combine(date_obj, time_obj)
-    
+
     # Handle different timezone types
-    if hasattr(timezone_obj, 'localize'):
+    if hasattr(timezone_obj, "localize"):
         # Standard pytz timezone
-        return timezone_obj.localize(naive_dt)
+        return cast(datetime.datetime, timezone_obj.localize(naive_dt))
     else:
         # For _tzicalvtz and other timezone types, use replace
         return naive_dt.replace(tzinfo=timezone_obj)
@@ -59,21 +62,21 @@ class NotificationManager:
         self.notification_intervals = sorted(notification_intervals)
         self.sound_enabled = sound_enabled
         self.auto_open_urls = auto_open_urls
-        self.notified_events = {}  # Dict to track notified events
+        self.notified_events: Dict[str, datetime.datetime] = {}
         self.sounds_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "sounds"
         )
+        self.sounds: Dict[int, str] = {}
         self._setup_sounds()
-        self._url_opener_thread = None
+        self._url_opener_thread: Optional[threading.Thread] = None
         self._stop_flag = threading.Event()
 
         # Detect platform for platform-specific notification handling
         self.platform = platform.system()
         logger.info(f"Detected platform: {self.platform}")
 
-    def _setup_sounds(self):
+    def _setup_sounds(self) -> None:
         """Setup notification sounds."""
-        self.sounds = {}
         try:
             # Log sound directory
             logger.debug(f"Sound directory: {self.sounds_dir}")
@@ -110,7 +113,7 @@ class NotificationManager:
             logger.error(f"Error setting up sounds: {e}")
             logger.exception("Detailed sound setup error")
 
-    def check_events(self, events: List[CalendarEvent]):
+    def check_events(self, events: List[CalendarEvent]) -> None:
         """Check events for notifications.
 
         Args:
@@ -136,13 +139,13 @@ class NotificationManager:
                     # Try to determine if this event recurs today or tomorrow
                     # Use the local timezone for today, not UTC
                     local_now = datetime.datetime.now().astimezone()
-                    
+
                     # FIXED: Use the original event's timezone, not local timezone
                     original_timezone = event.start_time.tzinfo
 
                     # Get the time component from the original event
                     event_time = event.start_time.time()
-                    
+
                     # Debug: Log the original event details
                     logger.debug(
                         f"Processing recurring event '{event.summary}': "
@@ -150,10 +153,13 @@ class NotificationManager:
                         f"(timezone: {original_timezone}), "
                         f"extracted time: {event_time}"
                     )
-                    
+
                     # Special handling for events that might have been rescheduled
                     # If this event has a RECURRENCE-ID, it might be a moved/rescheduled event
-                    if hasattr(event, 'is_modified_instance') and event.is_modified_instance:
+                    if (
+                        hasattr(event, "is_modified_instance")
+                        and event.is_modified_instance
+                    ):
                         logger.debug(
                             f"Event '{event.summary}' is a modified instance "
                             f"(RECURRENCE-ID: {getattr(event, 'recurrence_id', 'N/A')}). "
@@ -275,7 +281,7 @@ class NotificationManager:
         # Clean up old notifications (older than 24 hours)
         self._cleanup_old_notifications(now)
 
-    def _cleanup_old_notifications(self, now: datetime.datetime):
+    def _cleanup_old_notifications(self, now: datetime.datetime) -> None:
         """Remove old notification records (older than 24 hours)."""
         to_remove = []
         for key, notify_time in self.notified_events.items():
@@ -285,7 +291,7 @@ class NotificationManager:
         for key in to_remove:
             del self.notified_events[key]
 
-    def _show_notification(self, event: CalendarEvent, minutes_before: int):
+    def _show_notification(self, event: CalendarEvent, minutes_before: int) -> None:
         """Show desktop notification for an event.
 
         Args:
@@ -365,7 +371,7 @@ class NotificationManager:
             logger.exception("Detailed macOS notification error")
             return False
 
-    def _play_sound(self, sound_file: str):
+    def _play_sound(self, sound_file: str) -> None:
         """Play notification sound.
 
         Args:
@@ -384,7 +390,7 @@ class NotificationManager:
             logger.error(f"Error playing sound: {e}")
             logger.exception("Detailed sound playback error")
 
-    def _schedule_url_open(self, url: str, event: CalendarEvent):
+    def _schedule_url_open(self, url: str, event: CalendarEvent) -> None:
         """Schedule opening URL in browser.
 
         Args:
@@ -392,7 +398,7 @@ class NotificationManager:
             event: Calendar event with the URL
         """
 
-        def url_opener():
+        def url_opener() -> None:
             try:
                 logger.info(f"Opening URL for event '{event.summary}': {url}")
                 webbrowser.open(url)
@@ -404,13 +410,19 @@ class NotificationManager:
         self._url_opener_thread.daemon = True
         self._url_opener_thread.start()
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop notification manager."""
         self._stop_flag.set()
         if self._url_opener_thread and self._url_opener_thread.is_alive():
             self._url_opener_thread.join(timeout=1.0)
 
-    def _check_notification_interval(self, event, interval, time_until_event, now):
+    def _check_notification_interval(
+        self,
+        event: CalendarEvent,
+        interval: int,
+        time_until_event: float,
+        now: datetime.datetime,
+    ) -> bool:
         """Check if an event needs notification for a specific interval.
 
         Args:
