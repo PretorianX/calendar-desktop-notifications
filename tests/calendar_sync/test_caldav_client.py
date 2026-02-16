@@ -492,6 +492,76 @@ class TestCalDAVClient:
         assert event.start_time.day == 27
 
     @patch("caldav.DAVClient")
+    def test_modified_recurring_event_uses_dtstart_not_recurrence_id(
+        self, mock_dav_client
+    ):
+        """Modified recurring instances must use DTSTART, not RECURRENCE-ID.
+
+        Regression test: a recurring event rescheduled from Feb 9 to Feb 16
+        was hidden because RECURRENCE-ID (Feb 9) was used as start_time,
+        making the event appear a week in the past and getting filtered out.
+        Per RFC 5545 §3.8.4.4, RECURRENCE-ID identifies which original
+        occurrence is being modified — DTSTART holds the actual start time.
+        """
+        mock_principal = MagicMock()
+        mock_calendar = MagicMock()
+        mock_calendar.name = "Test Calendar"
+
+        mock_event = MagicMock()
+        vevent = mock_event.vobject_instance.vevent
+
+        vevent.uid.value = "4c33d628-c535-4f1c-be6b-c1f17841b4c0"
+        vevent.summary.value = "TechOps AI tool set for infrastructure"
+
+        kyiv_tz = pytz.timezone("Europe/Kyiv")
+        # Actual start — today (Feb 16)
+        actual_start = kyiv_tz.localize(datetime.datetime(2026, 2, 16, 14, 30, 0))
+        actual_end = kyiv_tz.localize(datetime.datetime(2026, 2, 16, 16, 0, 0))
+        # RECURRENCE-ID — original occurrence it replaces (Feb 9, a week ago)
+        recurrence_id_time = kyiv_tz.localize(
+            datetime.datetime(2026, 2, 9, 14, 30, 0)
+        )
+
+        vevent.dtstart.value = actual_start
+        vevent.dtend.value = actual_end
+        vevent.recurrence_id.value = recurrence_id_time
+        vevent.sequence.value = 78
+
+        mock_calendar.date_search.return_value = [mock_event]
+        mock_principal.calendars.return_value = [mock_calendar]
+        mock_dav_client.return_value.principal.return_value = mock_principal
+
+        client = CalDAVClient(
+            url="https://example.com/caldav",
+            username="test",
+            password="test123",
+            calendar_name="Test Calendar",
+        )
+        client.connect()
+
+        search_start = kyiv_tz.localize(datetime.datetime(2026, 2, 16, 0, 0, 0))
+        search_end = kyiv_tz.localize(datetime.datetime(2026, 2, 17, 0, 0, 0))
+
+        events = client.get_events(search_start, search_end)
+
+        # Event must NOT be filtered out
+        assert len(events) == 1
+        event = events[0]
+
+        # start_time must be DTSTART (Feb 16), not RECURRENCE-ID (Feb 9)
+        assert event.start_time == actual_start
+        assert event.start_time.day == 16
+        assert event.start_time.month == 2
+
+        # end_time must be DTEND directly
+        assert event.end_time == actual_end
+        assert event.end_time.hour == 16
+
+        # Metadata
+        assert event.is_modified_instance is True
+        assert event.recurrence_id == recurrence_id_time
+
+    @patch("caldav.DAVClient")
     def test_timezone_preservation_for_recurring_events(self, mock_dav_client):
         """Test that recurring events preserve their original timezone when calculating today's occurrence."""
         # Mock setup

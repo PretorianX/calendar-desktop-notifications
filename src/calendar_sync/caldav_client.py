@@ -270,7 +270,9 @@ class CalDAVClient:
 
                     is_declined = participation_status == "DECLINED"
 
-                    # Get start time
+                    # Get start time — always use DTSTART as the actual event time.
+                    # RECURRENCE-ID identifies which original occurrence was modified,
+                    # it is NOT the actual start time (RFC 5545 §3.8.4.4).
                     start_time = event_data.dtstart.value
 
                     # Debug: Log the raw datetime value and its timezone
@@ -279,20 +281,14 @@ class CalDAVClient:
                         f"(type: {type(start_time)}, tzinfo: {getattr(start_time, 'tzinfo', 'N/A')})"
                     )
 
-                    # For modified recurring events, use RECURRENCE-ID as the actual start time
                     if hasattr(event_data, "recurrence_id"):
                         try:
                             recurrence_id_time = event_data.recurrence_id.value
-                            if isinstance(recurrence_id_time, datetime.datetime):
-                                logger.debug(
-                                    f"Event has RECURRENCE-ID: {recurrence_id_time}. "
-                                    f"Using RECURRENCE-ID as actual start time instead of DTSTART."
-                                )
-                                start_time = recurrence_id_time
-                            else:
-                                logger.debug(
-                                    f"RECURRENCE-ID is not a datetime object: {type(recurrence_id_time)}"
-                                )
+                            logger.debug(
+                                f"Event has RECURRENCE-ID: {recurrence_id_time} "
+                                f"(original occurrence it replaces). "
+                                f"Using DTSTART {start_time} as actual start time."
+                            )
                         except (AttributeError, TypeError) as e:
                             logger.debug(f"Could not access RECURRENCE-ID value: {e}")
 
@@ -311,28 +307,10 @@ class CalDAVClient:
                         f"(tzinfo: {start_time.tzinfo})"
                     )
 
-                    # Get end time - calculate from start time if this is a modified instance
+                    # Get end time — DTEND already reflects the actual end for
+                    # both regular and modified recurring instances.
                     if hasattr(event_data, "dtend"):
                         end_time = event_data.dtend.value
-
-                        # If we used RECURRENCE-ID for start time, calculate end time based on original duration
-                        if hasattr(event_data, "recurrence_id"):
-                            original_start = event_data.dtstart.value
-                            original_end = event_data.dtend.value
-                            if (
-                                isinstance(original_start, datetime.datetime)
-                                and isinstance(original_end, datetime.datetime)
-                                and isinstance(start_time, datetime.datetime)
-                            ):
-                                duration = original_end - original_start
-                                end_time = start_time + duration
-                                logger.debug(
-                                    f"Calculated end time for modified instance: {end_time} (duration: {duration})"
-                                )
-                            else:
-                                logger.debug(
-                                    "Could not calculate duration for modified instance - using original end time"
-                                )
 
                         if not isinstance(end_time, datetime.datetime):
                             # Convert date to datetime if needed
