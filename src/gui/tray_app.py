@@ -15,6 +15,7 @@ from PyQt6 import QtCore, QtWidgets
 
 from src.calendar_sync.caldav_client import CalDAVClient
 from src.config.config_manager import ConfigManager
+from src._version import __version__
 from src.notification.notification_manager import NotificationManager
 
 logger = logging.getLogger(__name__)
@@ -315,6 +316,12 @@ class SettingsDialog(QtWidgets.QDialog):
         button_layout.addWidget(self.cancel_button)
 
         layout.addStretch()
+
+        version_label = QtWidgets.QLabel(f"v{__version__}")
+        version_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        version_label.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(version_label)
+
         layout.addLayout(button_layout)
 
     def _test_connection(self):
