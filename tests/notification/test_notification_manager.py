@@ -225,3 +225,149 @@ class TestNotificationManager:
         assert (
             result is True
         ), "Tomorrow's occurrence of a recurring event should be detected"
+
+    @patch("src.notification.notification_manager.platform.system")
+    @patch("src.notification.notification_manager.subprocess.run")
+    def test_modified_instance_past_does_not_project_to_today(
+        self, mock_subprocess, mock_platform
+    ):
+        """Modified instances (RECURRENCE-ID) >24 h old must not trigger spurious notifications.
+
+        Regression: before the fix, a rescheduled exception whose start_time was more
+        than 1 day in the past entered the recurring-event projection branch and could
+        fire a notification at the same time-of-day today — incorrectly treating a
+        one-time exception as a repeating event.
+        """
+        mock_platform.return_value = "Darwin"
+
+        import pytz
+
+        kyiv_tz = pytz.timezone("Europe/Kyiv")
+
+        # Set the event start to 26 hours ago so that time_until_event < -1440 min,
+        # reliably triggering the recurring-event projection branch.
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        event_start_utc = now_utc - datetime.timedelta(hours=26)
+        # Express the start time in Europe/Kyiv for realism
+        event_start = event_start_utc.astimezone(kyiv_tz)
+        event_end = event_start + datetime.timedelta(minutes=45)
+        recurrence_id = event_start - datetime.timedelta(hours=4)
+
+        modified_event = CalendarEvent(
+            uid="22708ed3-e0c7-4bbd-a820-55fce5ba0b23",
+            summary="TO Infra Weekly TL sync",
+            start_time=event_start,
+            end_time=event_end,
+            location="Discord TO Infra Meeting Room 1",
+        )
+        modified_event.is_modified_instance = True
+        modified_event.recurrence_id = recurrence_id
+
+        # Confirm the precondition: this event must be more than 1440 minutes in the past
+        time_until = (event_start - now_utc).total_seconds() / 60
+        assert time_until < -1440, f"Expected time_until < -1440, got {time_until:.1f}"
+
+        with patch.object(
+            self.notification_manager, "_show_notification"
+        ) as mock_show:
+            self.notification_manager.check_events([modified_event])
+
+            # Modified instances must not be projected to today — no notification
+            mock_show.assert_not_called()
+
+    @patch("src.notification.notification_manager.platform.system")
+    @patch("src.notification.notification_manager.subprocess.run")
+    def test_recurring_event_different_occurrences_each_notified(
+        self, mock_subprocess, mock_platform
+    ):
+        """Two occurrences of the same recurring event (same UID, different start times)
+        must each produce their own notifications.
+
+        Regression: when keys were keyed only on UID, the first occurrence's
+        notification record blocked the second occurrence's notification.
+        Both occurrences are placed within the 10-minute notification window
+        but differ by 1 second so their occurrence keys are distinct.
+        """
+        mock_platform.return_value = "Darwin"
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        # Both occurrences are 10 minutes away — inside the [9.5, 10.5] window.
+        # They differ by 1 second so their ISO start_time representations differ,
+        # producing distinct occurrence keys.
+        start_a = now + datetime.timedelta(minutes=10)
+        start_b = now + datetime.timedelta(minutes=10, seconds=1)
+
+        def _make_occurrence(start) -> CalendarEvent:
+            ev = CalendarEvent(
+                uid="recurring-uid-abc",
+                summary="Daily Standup",
+                start_time=start,
+                end_time=start + datetime.timedelta(hours=1),
+            )
+            ev.is_modified_instance = False
+            return ev
+
+        occurrence_a = _make_occurrence(start_a)
+        occurrence_b = _make_occurrence(start_b)
+
+        with patch.object(
+            self.notification_manager, "_show_notification"
+        ) as mock_show:
+            # Both occurrences are passed in a single check — each must fire once.
+            self.notification_manager.check_events([occurrence_a, occurrence_b])
+            assert mock_show.call_count == 2, (
+                "Both occurrences must notify independently (different occurrence keys)"
+            )
+
+    @patch("src.notification.notification_manager.platform.system")
+    @patch("src.notification.notification_manager.subprocess.run")
+    def test_concurrent_check_events_no_duplicate_notification(
+        self, mock_subprocess, mock_platform
+    ):
+        """Concurrent calls to check_events from two threads must fire exactly one
+        notification, not two.
+
+        Regression: notified_events was an unprotected dict; two threads could
+        both pass the 'not in notified_events' guard before either wrote to it,
+        resulting in duplicate notifications.
+        """
+        import threading
+
+        mock_platform.return_value = "Darwin"
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        event = CalendarEvent(
+            uid="concurrent-uid",
+            summary="Concurrent Meeting",
+            start_time=now + datetime.timedelta(minutes=10),
+            end_time=now + datetime.timedelta(hours=1),
+        )
+        event.is_modified_instance = False
+
+        notification_count = []
+
+        original_show = self.notification_manager._show_notification
+
+        def counting_show(ev, interval):
+            notification_count.append(1)
+
+        self.notification_manager._show_notification = counting_show
+
+        barrier = threading.Barrier(2)
+
+        def run_check():
+            barrier.wait()
+            self.notification_manager.check_events([event])
+
+        threads = [threading.Thread(target=run_check) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.notification_manager._show_notification = original_show
+
+        assert len(notification_count) == 1, (
+            f"Expected exactly 1 notification, got {len(notification_count)}"
+        )

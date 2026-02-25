@@ -149,12 +149,18 @@ class CalDAVClient:
     def get_events(
         self, start_date: datetime.datetime, end_date: datetime.datetime
     ) -> List[CalendarEvent]:
-        """Get calendar events between start and end dates."""
+        """Get calendar events between start and end dates.
+
+        Raises:
+            RuntimeError: If the CalDAV connection cannot be established or the
+                date_search request fails.  The caller is responsible for deciding
+                whether to keep a stale cache or discard it.
+        """
         if self.calendar is None:
             if not self.connect():
-                return []
+                raise RuntimeError("Could not connect to CalDAV server")
         if self.calendar is None:
-            return []
+            raise RuntimeError("Calendar is not available after connect")
 
         calendar = self.calendar
         events = []
@@ -169,6 +175,34 @@ class CalDAVClient:
             )
 
             logger.info(f"Found {len(caldav_events)} events in the date range")
+
+            # Log a summary of every calendar object the server returned so that
+            # missed-notification issues (e.g. exceptions with a different UID) can be
+            # diagnosed from application logs without requiring a network capture.
+            for idx, ce in enumerate(caldav_events):
+                try:
+                    vobj_summary = ce.vobject_instance
+                    vevents_raw = getattr(vobj_summary, "vevent_list", None)
+                    if not isinstance(vevents_raw, list) or not vevents_raw:
+                        ve = getattr(vobj_summary, "vevent", None)
+                        vevents_raw = [ve] if ve else []
+                    for ve in vevents_raw:
+                        uid_val = getattr(getattr(ve, "uid", None), "value", "?")
+                        dtstart_val = getattr(getattr(ve, "dtstart", None), "value", "?")
+                        recid_val = getattr(getattr(ve, "recurrence_id", None), "value", None)
+                        related_val = getattr(getattr(ve, "related_to", None), "value", None)
+                        summary_val = getattr(getattr(ve, "summary", None), "value", "?")
+                        logger.info(
+                            "  [%d] uid=%s dtstart=%s recurrence_id=%s related_to=%s summary=%r",
+                            idx,
+                            uid_val,
+                            dtstart_val,
+                            recid_val,
+                            related_val,
+                            summary_val,
+                        )
+                except Exception:
+                    logger.debug("  [%d] could not summarise calendar object", idx)
 
             # Convert to our event format
             for caldav_event in caldav_events:
@@ -388,4 +422,4 @@ class CalDAVClient:
 
         except Exception as e:
             logger.error(f"Error getting events: {e}")
-            return []
+            raise

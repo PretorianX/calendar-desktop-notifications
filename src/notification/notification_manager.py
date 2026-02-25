@@ -63,6 +63,9 @@ class NotificationManager:
         self.sound_enabled = sound_enabled
         self.auto_open_urls = auto_open_urls
         self.notified_events: Dict[str, datetime.datetime] = {}
+        # Protects notified_events against concurrent access from the sync thread
+        # and the notification thread both calling check_events at the same time.
+        self._notified_events_lock = threading.Lock()
         self.sounds_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "sounds"
         )
@@ -113,6 +116,18 @@ class NotificationManager:
             logger.error(f"Error setting up sounds: {e}")
             logger.exception("Detailed sound setup error")
 
+    @staticmethod
+    def _occurrence_id(event: "CalendarEvent") -> str:
+        """Return a key that uniquely identifies a specific event occurrence.
+
+        Using uid alone is not sufficient for recurring events: all expanded
+        occurrences share the same UID, so a notification fired for Monday's
+        meeting would block Tuesday's notification until the 24-hour cleanup
+        window elapsed.  Including the ISO start time makes each occurrence
+        distinct while still being stable across successive syncs.
+        """
+        return f"{event.uid}|{event.start_time.isoformat()}"
+
     def check_events(self, events: List[CalendarEvent]) -> None:
         """Check events for notifications.
 
@@ -123,163 +138,167 @@ class NotificationManager:
 
         logger.debug(f"Checking {len(events)} events for notifications at {now}")
 
-        for event in events:
-            event_id = event.uid
-            time_until_event = (event.start_time - now).total_seconds() / 60
+        # Hold the lock for the entire pass so that the sync thread and the
+        # notification thread cannot both fire the same notification.
+        with self._notified_events_lock:
+            for event in events:
+                event_id = self._occurrence_id(event)
+                time_until_event = (event.start_time - now).total_seconds() / 60
 
-            # Handle recurring events with past start times
-            # If time is significantly negative (more than 1 day), check if this might be a recurring event
-            if time_until_event < -1440:  # More than 1 day in the past
-                logger.debug(
-                    f"Event '{event.summary}' has a start time far in the past "
-                    f"(time_until_event={time_until_event:.2f} min)"
-                )
-
-                try:
-                    # Try to determine if this event recurs today or tomorrow
-                    # Use the local timezone for today, not UTC
-                    local_now = datetime.datetime.now().astimezone()
-
-                    # FIXED: Use the original event's timezone, not local timezone
-                    original_timezone = event.start_time.tzinfo
-
-                    # Get the time component from the original event
-                    event_time = event.start_time.time()
-
-                    # Debug: Log the original event details
+                # Handle recurring events with past start times
+                # If time is significantly negative (more than 1 day), check if this might be a recurring event
+                if time_until_event < -1440:  # More than 1 day in the past
                     logger.debug(
-                        f"Processing recurring event '{event.summary}': "
-                        f"Original start_time: {event.start_time} "
-                        f"(timezone: {original_timezone}), "
-                        f"extracted time: {event_time}"
+                        f"Event '{event.summary}' has a start time far in the past "
+                        f"(time_until_event={time_until_event:.2f} min)"
                     )
 
-                    # Special handling for events that might have been rescheduled
-                    # If this event has a RECURRENCE-ID, it might be a moved/rescheduled event
-                    if (
-                        hasattr(event, "is_modified_instance")
-                        and event.is_modified_instance
-                    ):
+                    try:
+                        # Try to determine if this event recurs today or tomorrow
+                        # Use the local timezone for today, not UTC
+                        local_now = datetime.datetime.now().astimezone()
+
+                        # FIXED: Use the original event's timezone, not local timezone
+                        original_timezone = event.start_time.tzinfo
+
+                        # Get the time component from the original event
+                        event_time = event.start_time.time()
+
+                        # Debug: Log the original event details
                         logger.debug(
-                            f"Event '{event.summary}' is a modified instance "
-                            f"(RECURRENCE-ID: {getattr(event, 'recurrence_id', 'N/A')}). "
-                            f"This might be a rescheduled event - checking for today's occurrence with different times."
+                            f"Processing recurring event '{event.summary}': "
+                            f"Original start_time: {event.start_time} "
+                            f"(timezone: {original_timezone}), "
+                            f"extracted time: {event_time}"
                         )
 
-                    # FIXED: Create today's occurrence using utility function for proper timezone handling
-                    today_date = local_now.astimezone(original_timezone).date()
-                    today_occurrence = _create_timezone_aware_datetime(
-                        today_date, event_time, original_timezone
-                    )
-
-                    # Create tomorrow's occurrence using utility function
-                    tomorrow_date = today_date + datetime.timedelta(days=1)
-                    tomorrow_occurrence = _create_timezone_aware_datetime(
-                        tomorrow_date, event_time, original_timezone
-                    )
-
-                    # Calculate time until these occurrences
-                    time_until_today = (
-                        today_occurrence - local_now
-                    ).total_seconds() / 60
-                    time_until_tomorrow = (
-                        tomorrow_occurrence - local_now
-                    ).total_seconds() / 60
-
-                    logger.debug(
-                        f"Possible occurrence today at {today_occurrence} "
-                        f"(local equivalent: {today_occurrence.astimezone(local_now.tzinfo)}), "
-                        f"time until: {time_until_today:.2f} min"
-                    )
-                    logger.debug(
-                        f"Possible occurrence tomorrow at {tomorrow_occurrence} "
-                        f"(local equivalent: {tomorrow_occurrence.astimezone(local_now.tzinfo)}), "
-                        f"time until: {time_until_tomorrow:.2f} min"
-                    )
-
-                    # Use today's occurrence if it's in the future
-                    if today_occurrence > local_now:
-                        time_until_event = time_until_today
-                        logger.debug(
-                            f"Adjusted recurring event '{event.summary}' to today's "
-                            f"occurrence: {time_until_event:.2f} min until start"
-                        )
-                    # Otherwise use tomorrow's occurrence if it's within our notification window
-                    elif (
-                        tomorrow_occurrence > local_now
-                        and time_until_tomorrow <= max(self.notification_intervals) + 60
-                    ):
-                        # Add 60 minutes buffer to catch events that might need notification soon
-                        time_until_event = time_until_tomorrow
-                        logger.debug(
-                            f"Adjusted recurring event '{event.summary}' to tomorrow's "
-                            f"occurrence: {time_until_event:.2f} min until start"
-                        )
-                    else:
-                        # Skip this event if both occurrences are in the past or too far in the future
-                        if today_occurrence <= local_now:
-                            logger.debug(
-                                f"Today's occurrence for '{event.summary}' already passed "
-                                f"at {today_occurrence} (local time: {today_occurrence.astimezone(local_now.tzinfo)}), "
-                                f"checking tomorrow"
-                            )
+                        # Modified instances (RECURRENCE-ID) are one-time exceptions and do not
+                        # recur, so projecting them to today/tomorrow is incorrect.
                         if (
-                            tomorrow_occurrence <= local_now
-                            or time_until_tomorrow
-                            > max(self.notification_intervals) + 60
+                            hasattr(event, "is_modified_instance")
+                            and event.is_modified_instance
                         ):
                             logger.debug(
-                                f"Tomorrow's occurrence for '{event.summary}' is either "
-                                f"in the past or too far in the future, skipping"
+                                f"Event '{event.summary}' is a modified instance "
+                                f"(RECURRENCE-ID: {getattr(event, 'recurrence_id', 'N/A')}) "
+                                f"that is more than 1 day in the past — skipping, not recurring."
                             )
+                            continue
+
+                        # Create today's occurrence using utility function for proper timezone handling
+                        today_date = local_now.astimezone(original_timezone).date()
+                        today_occurrence = _create_timezone_aware_datetime(
+                            today_date, event_time, original_timezone
+                        )
+
+                        # Create tomorrow's occurrence using utility function
+                        tomorrow_date = today_date + datetime.timedelta(days=1)
+                        tomorrow_occurrence = _create_timezone_aware_datetime(
+                            tomorrow_date, event_time, original_timezone
+                        )
+
+                        # Calculate time until these occurrences
+                        time_until_today = (
+                            today_occurrence - local_now
+                        ).total_seconds() / 60
+                        time_until_tomorrow = (
+                            tomorrow_occurrence - local_now
+                        ).total_seconds() / 60
+
+                        logger.debug(
+                            f"Possible occurrence today at {today_occurrence} "
+                            f"(local equivalent: {today_occurrence.astimezone(local_now.tzinfo)}), "
+                            f"time until: {time_until_today:.2f} min"
+                        )
+                        logger.debug(
+                            f"Possible occurrence tomorrow at {tomorrow_occurrence} "
+                            f"(local equivalent: {tomorrow_occurrence.astimezone(local_now.tzinfo)}), "
+                            f"time until: {time_until_tomorrow:.2f} min"
+                        )
+
+                        # Use today's occurrence if it's in the future
+                        if today_occurrence > local_now:
+                            time_until_event = time_until_today
+                            logger.debug(
+                                f"Adjusted recurring event '{event.summary}' to today's "
+                                f"occurrence: {time_until_event:.2f} min until start"
+                            )
+                        # Otherwise use tomorrow's occurrence if it's within our notification window
+                        elif (
+                            tomorrow_occurrence > local_now
+                            and time_until_tomorrow <= max(self.notification_intervals) + 60
+                        ):
+                            # Add 60 minutes buffer to catch events that might need notification soon
+                            time_until_event = time_until_tomorrow
+                            logger.debug(
+                                f"Adjusted recurring event '{event.summary}' to tomorrow's "
+                                f"occurrence: {time_until_event:.2f} min until start"
+                            )
+                        else:
+                            # Skip this event if both occurrences are in the past or too far in the future
+                            if today_occurrence <= local_now:
+                                logger.debug(
+                                    f"Today's occurrence for '{event.summary}' already passed "
+                                    f"at {today_occurrence} (local time: {today_occurrence.astimezone(local_now.tzinfo)}), "
+                                    f"checking tomorrow"
+                                )
+                            if (
+                                tomorrow_occurrence <= local_now
+                                or time_until_tomorrow
+                                > max(self.notification_intervals) + 60
+                            ):
+                                logger.debug(
+                                    f"Tomorrow's occurrence for '{event.summary}' is either "
+                                    f"in the past or too far in the future, skipping"
+                                )
+                            continue
+                    except Exception as e:
+                        logger.error(f"Error calculating recurring event time: {e}")
+                        # Skip this event if we can't determine a reasonable time
                         continue
-                except Exception as e:
-                    logger.error(f"Error calculating recurring event time: {e}")
-                    # Skip this event if we can't determine a reasonable time
+
+                # Skip events that are too far in the future
+                if time_until_event > max(self.notification_intervals) + 1:
+                    # Only log for events within notification range + 1 minute buffer
                     continue
 
-            # Skip events that are too far in the future
-            if time_until_event > max(self.notification_intervals) + 1:
-                # Only log for events within notification range + 1 minute buffer
-                continue
-
-            # Log events in the past but process them anyway in case they're recurring events
-            # that should be happening today but have an old start_time
-            if time_until_event < 0:
-                logger.debug(
-                    f"Event '{event.summary}' appears to have already started "
-                    f"(time_until_event={time_until_event:.2f}), but processing "
-                    f"anyway in case it's a recurring event"
-                )
-            else:
-                logger.debug(
-                    f"Event '{event.summary}' (ID: {event_id}): "
-                    f"{time_until_event:.2f} minutes until start"
-                )
-
-            # Check each notification interval
-            for interval in self.notification_intervals:
-                self._check_notification_interval(
-                    event, interval, time_until_event, now
-                )
-
-            # Check if we need to open URL (1 minute before event)
-            if (
-                self.auto_open_urls
-                and 0.5 <= time_until_event <= 1.3
-                and event.has_url_location()
-            ):
-                url = event.get_url()
-                if url and f"{event_id}_url_opened" not in self.notified_events:
-                    logger.info(
-                        f"Time to open URL for event '{event.summary}' "
-                        f"({time_until_event:.2f} minutes)"
+                # Log events in the past but process them anyway in case they're recurring events
+                # that should be happening today but have an old start_time
+                if time_until_event < 0:
+                    logger.debug(
+                        f"Event '{event.summary}' appears to have already started "
+                        f"(time_until_event={time_until_event:.2f}), but processing "
+                        f"anyway in case it's a recurring event"
                     )
-                    self._schedule_url_open(url, event)
-                    self.notified_events[f"{event_id}_url_opened"] = now
+                else:
+                    logger.debug(
+                        f"Event '{event.summary}' (ID: {event_id}): "
+                        f"{time_until_event:.2f} minutes until start"
+                    )
 
-        # Clean up old notifications (older than 24 hours)
-        self._cleanup_old_notifications(now)
+                # Check each notification interval
+                for interval in self.notification_intervals:
+                    self._check_notification_interval(
+                        event, interval, time_until_event, now
+                    )
+
+                # Check if we need to open URL (1 minute before event)
+                if (
+                    self.auto_open_urls
+                    and 0.5 <= time_until_event <= 1.3
+                    and event.has_url_location()
+                ):
+                    url = event.get_url()
+                    if url and f"{event_id}_url_opened" not in self.notified_events:
+                        logger.info(
+                            f"Time to open URL for event '{event.summary}' "
+                            f"({time_until_event:.2f} minutes)"
+                        )
+                        self._schedule_url_open(url, event)
+                        self.notified_events[f"{event_id}_url_opened"] = now
+
+            # Clean up old notifications (older than 24 hours)
+            self._cleanup_old_notifications(now)
 
     def _cleanup_old_notifications(self, now: datetime.datetime) -> None:
         """Remove old notification records (older than 24 hours)."""
@@ -434,7 +453,7 @@ class NotificationManager:
         Returns:
             bool: Whether notification was sent
         """
-        event_id = event.uid
+        event_id = self._occurrence_id(event)
         interval_id = f"{event_id}_{interval}"
 
         # Use a wider window to avoid missing notifications with per-minute checks

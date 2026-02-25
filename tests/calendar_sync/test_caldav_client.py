@@ -623,3 +623,26 @@ class TestCalDAVClient:
         # Verify the original time is preserved
         assert event.start_time.hour == 15  # 3 PM Athens time
         assert event.start_time.minute == 0
+
+    @patch("caldav.DAVClient")
+    def test_get_events_raises_on_connection_failure(self, mock_dav_client):
+        """get_events must raise RuntimeError (not return []) on connection failure.
+
+        Regression: returning [] caused _sync_calendar to call _set_events([]),
+        wiping the entire event cache on a transient network error.
+        """
+        mock_dav_client.return_value.principal.side_effect = Exception("connection refused")
+
+        client = CalDAVClient(
+            url="https://example.com/caldav",
+            username="user",
+            password="pass",
+        )
+
+        import pytest
+
+        with pytest.raises(Exception):
+            client.get_events(
+                datetime.datetime.now(pytz.UTC),
+                datetime.datetime.now(pytz.UTC) + datetime.timedelta(hours=24),
+            )
